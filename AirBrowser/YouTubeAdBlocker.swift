@@ -2,7 +2,7 @@ import Foundation
 
 struct YouTubeAdBlocker {
     static func getScript() -> String {
-        return """
+        return #"""
         (function() {
             function skipAds() {
                 var skipBtn = document.querySelector('.ytp-ad-skip-button, .ytp-ad-skip-button-modern, .ytp-skip-ad-button, .ytp-ad-skip-button-slot');
@@ -28,6 +28,6 @@ struct YouTubeAdBlocker {
 
             setInterval(skipAds, 500);
         })();
-        """
+        """#
     }
 }
