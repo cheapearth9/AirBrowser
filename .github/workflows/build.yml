@@ -24,13 +24,12 @@ jobs:
           xcodebuild archive \
             -project AirBrowser.xcodeproj \
             -scheme AirBrowser \
-            -sdk iphoneos \
             -destination 'generic/platform=iOS' \
             -archivePath build/AirBrowser.xcarchive \
             CODE_SIGN_IDENTITY="" \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGNING_ALLOWED=NO \
-            CODE_SIGN_ENTITLEMENTS=""
+            AD_HOC_CODE_SIGNING_ALLOWED=YES
 
       - name: Package IPA File
         run: |
