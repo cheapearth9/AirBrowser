@@ -21,15 +21,16 @@ jobs:
 
       - name: Build Archive (Unsigned)
         run: |
-          mkdir -p build
           xcodebuild archive \
             -project AirBrowser.xcodeproj \
             -scheme AirBrowser \
+            -sdk iphoneos \
             -destination 'generic/platform=iOS' \
             -archivePath build/AirBrowser.xcarchive \
             CODE_SIGN_IDENTITY="" \
             CODE_SIGNING_REQUIRED=NO \
-            CODE_SIGNING_ALLOWED=NO
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGN_ENTITLEMENTS=""
 
       - name: Package IPA File
         run: |
