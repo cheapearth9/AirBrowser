@@ -9,15 +9,12 @@ targets:
     platform: iOS
     deploymentTarget: "17.0"
     sources:
-      - path: AppDelegate.swift
-      - path: SceneDelegate.swift
-      - path: DisplayController.swift
-      - path: MainAppViewController.swift
-      - path: YouTubeAdBlocker.swift
+      - AirBrowser
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.custom.AirBrowser
-        INFOPLIST_FILE: Info.plist
+        INFOPLIST_FILE: AirBrowser/Info.plist
         GENERATE_INFOPLIST_FILE: NO
         TARGETED_DEVICE_FAMILY: "1,2"
-        CODE_SIGNING_ALLOWED: "NO"
+        CODE_SIGNING_ALLOWED: NO
+        CODE_SIGNING_REQUIRED: NO
