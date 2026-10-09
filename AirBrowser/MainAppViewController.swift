@@ -1,148 +1,56 @@
 import UIKit
-import Combine
+import WebKit
 
-class MainAppViewController: UIViewController, UITextFieldDelegate {
+class MainAppViewController: UIViewController, WKNavigationDelegate {
 
-    private let urlBar = UITextField()
-    private let trackpadView = UIView()
-    private let keyboardTriggerButton = UIButton(type: .system)
-    private var cancellables = Set<AnyCancellable>()
+    var webView: WKWebView!
+
+    // User-Agent Strings
+    // 1. Modern iOS Safari UA to fix Google rendering as an old/basic page
+    let defaultUA = "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1"
+    
+    // 2. Smart TV UA to prevent youtube.com/tv from redirecting to m.youtube.com
+    let youtubeTVUA = "Mozilla/5.0 (SmartTV; SmartTV) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36"
 
     override func viewDidLoad() {
         super.viewDidLoad()
-        setupUI()
-        setupGestureRecognizers()
-        bindDisplayState()
 
-        if let url = URL(string: "https://www.youtube.com") {
-            DisplayController.shared.webView.load(URLRequest(url: url))
-        }
-    }
-
-    private func setupUI() {
-        view.backgroundColor = .systemBackground
-
-        urlBar.borderStyle = .roundedRect
-        urlBar.placeholder = "Enter URL or Search YouTube..."
-        urlBar.autocapitalizationType = .none
-        urlBar.autocorrectionType = .no
-        urlBar.keyboardType = .URL
-        urlBar.returnKeyType = .go
-        urlBar.delegate = self
-        urlBar.translatesAutoresizingMaskIntoConstraints = false
-
-        trackpadView.backgroundColor = .secondarySystemBackground
-        trackpadView.layer.cornerRadius = 16
-        trackpadView.layer.borderWidth = 1
-        trackpadView.layer.borderColor = UIColor.separator.cgColor
-        trackpadView.translatesAutoresizingMaskIntoConstraints = false
-
-        keyboardTriggerButton.setTitle("Show Keyboard", for: .normal)
-        keyboardTriggerButton.setImage(UIImage(systemName: "keyboard"), for: .normal)
-        keyboardTriggerButton.addTarget(self, action: #selector(toggleKeyboard), for: .touchUpInside)
-        keyboardTriggerButton.translatesAutoresizingMaskIntoConstraints = false
-
-        view.addSubview(urlBar)
-        view.addSubview(trackpadView)
-        view.addSubview(keyboardTriggerButton)
-
-        NSLayoutConstraint.activate([
-            urlBar.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 12),
-            urlBar.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
-            urlBar.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
-
-            trackpadView.topAnchor.constraint(equalTo: urlBar.bottomAnchor, constant: 16),
-            trackpadView.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
-            trackpadView.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
-            trackpadView.bottomAnchor.constraint(equalTo: keyboardTriggerButton.topAnchor, constant: -12),
-
-            keyboardTriggerButton.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -12),
-            keyboardTriggerButton.centerXAnchor.constraint(equalTo: view.centerXAnchor)
-        ])
-    }
-
-    private func bindDisplayState() {
-        DisplayController.shared.$isExternalConnected
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] isConnected in
-                self?.updateLayoutForDisplayMode(isExternalConnected: isConnected)
-            }
-            .store(in: &cancellables)
-    }
-
-    private func updateLayoutForDisplayMode(isExternalConnected: Bool) {
-        if isExternalConnected {
-            DisplayController.shared.webView.removeFromSuperview()
-            trackpadView.isHidden = false
-            keyboardTriggerButton.isHidden = false
-        } else {
-            trackpadView.isHidden = true
-            keyboardTriggerButton.isHidden = true
-            
-            let webView = DisplayController.shared.webView
-            webView.frame = .zero
-            webView.translatesAutoresizingMaskIntoConstraints = false
-            view.addSubview(webView)
-
-            NSLayoutConstraint.activate([
-                webView.topAnchor.constraint(equalTo: urlBar.bottomAnchor, constant: 12),
-                webView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
-                webView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-                webView.bottomAnchor.constraint(equalTo: view.bottomAnchor)
-            ])
-        }
-    }
-
-    private func setupGestureRecognizers() {
-        let panGesture = UIPanGestureRecognizer(target: self, action: #selector(handlePan(_:)))
-        panGesture.maximumNumberOfTouches = 1
-        trackpadView.addGestureRecognizer(panGesture)
-
-        let tapGesture = UITapGestureRecognizer(target: self, action: #selector(handleTap(_:)))
-        trackpadView.addGestureRecognizer(tapGesture)
-
-        let scrollGesture = UIPanGestureRecognizer(target: self, action: #selector(handleScroll(_:)))
-        scrollGesture.minimumNumberOfTouches = 2
-        scrollGesture.maximumNumberOfTouches = 2
-        trackpadView.addGestureRecognizer(scrollGesture)
-    }
-
-    @objc private func handlePan(_ gesture: UIPanGestureRecognizer) {
-        let translation = gesture.translation(in: trackpadView)
-        DisplayController.shared.moveCursor(deltaX: translation.x, deltaY: translation.y)
-        gesture.setTranslation(.zero, in: trackpadView)
-    }
-
-    @objc private func handleTap(_ gesture: UITapGestureRecognizer) {
-        DisplayController.shared.performClickAtCursor()
-    }
-
-    @objc private func handleScroll(_ gesture: UIPanGestureRecognizer) {
-        let translation = gesture.translation(in: trackpadView)
-        DisplayController.shared.performScroll(deltaY: -translation.y)
-        gesture.setTranslation(.zero, in: trackpadView)
-    }
-
-    @objc private func toggleKeyboard() {
-        if urlBar.isFirstResponder {
-            urlBar.resignFirstResponder()
-        } else {
-            urlBar.becomeFirstResponder()
-        }
-    }
-
-    func textFieldShouldReturn(_ textField: UITextField) -> Bool {
-        textField.resignFirstResponder()
-        guard let text = textField.text, !text.isEmpty else { return true }
+        let config = WKWebViewConfiguration()
         
-        var urlString = text
-        if !urlString.lowercased().hasPrefix("http://") && !urlString.lowercased().hasPrefix("https://") {
-            urlString = "https://" + urlString
-        }
+        // Inject YouTube Ad Blocker script into all subframes and documents
+        let adBlockerScript = YouTubeAdBlocker.getScript()
+        let userScript = WKUserScript(source: adBlockerScript, injectionTime: .atDocumentEnd, forMainFrameOnly: false)
+        config.userContentController.addUserScript(userScript)
 
-        if let url = URL(string: urlString) {
-            DisplayController.shared.webView.load(URLRequest(url: url))
+        webView = WKWebView(frame: view.bounds, configuration: config)
+        webView.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        webView.navigationDelegate = self
+        
+        // Default to standard Safari User-Agent
+        webView.customUserAgent = defaultUA
+
+        view.addSubview(webView)
+
+        // Load starting URL
+        if let url = URL(string: "https://www.google.com") {
+            webView.load(URLRequest(url: url))
         }
-        return true
+    }
+
+    // Switch User-Agent dynamically when opening youtube.com/tv
+    func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction, decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
+        if let url = navigationAction.request.url {
+            if url.absoluteString.contains("youtube.com/tv") {
+                if webView.customUserAgent != youtubeTVUA {
+                    webView.customUserAgent = youtubeTVUA
+                    webView.load(URLRequest(url: url))
+                    decisionHandler(.cancel)
+                    return
+                }
+            } else if webView.customUserAgent != defaultUA {
+                webView.customUserAgent = defaultUA
+            }
+        }
+        decisionHandler(.allow)
     }
 }
