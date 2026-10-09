@@ -1,38 +1,35 @@
-import WebKit
+import Foundation
 
-final class YouTubeAdBlocker {
-    static let videoAdSkipScript = """
-    (function() {
-        if (window.__ytAdBlockInjected) return;
-        window.__ytAdBlockInjected = true;
-
-        function autoSkip() {
-            const skipButtons = document.querySelectorAll(
-                '.ytp-ad-skip-button, .ytp-ad-skip-button-modern, .ytp-skip-ad-button, .ytp-ad-skip-button-slot'
-            );
-            skipButtons.forEach(btn => btn.click());
-
-            const video = document.querySelector('video');
-            const adInterrupt = document.querySelector('.ad-interrupting, .html5-ad-pipeline');
-            if (video && adInterrupt) {
-                video.muted = true;
-                video.playbackRate = 16.0;
-                if (isFinite(video.duration)) {
-                    video.currentTime = video.duration;
+struct YouTubeAdBlocker {
+    static func getScript() -> String {
+        return """
+        (function() {
+            function skipAds() {
+                // 1. Standard & Mobile YouTube Skip Buttons
+                const skipBtn = document.querySelector('.ytp-ad-skip-button, .ytp-ad-skip-button-modern, .ytp-skip-ad-button, .ytp-ad-skip-button-slot');
+                if (skipBtn) {
+                    skipBtn.click();
                 }
+
+                // 2. Fast-forward video ad for both standard and YouTube TV Leanback DOM
+                const video = document.querySelector('video');
+                const adShowing = document.querySelector('.ad-showing, .ad-interrupting, [class*="ad-created"], .ytp-ad-player-overlay');
+                if (video && adShowing) {
+                    video.muted = true;
+                    video.playbackRate = 16.0;
+                    if (!isNaN(video.duration) && video.duration > 0) {
+                        video.currentTime = video.duration;
+                    }
+                }
+
+                // 3. Remove banner / overlay ads
+                const overlayAds = document.querySelectorAll('.ytp-ad-overlay-container, ytd-action-companion-ad-renderer, #player-ads');
+                overlayAds.forEach(ad => ad.remove());
             }
-        }
 
-        setInterval(autoSkip, 250);
-    })();
-    """
-
-    static func apply(to configuration: WKWebViewConfiguration) {
-        let userScript = WKUserScript(
-            source: videoAdSkipScript,
-            injectionTime: .atDocumentEnd,
-            forMainFrameOnly: false
-        )
-        configuration.userContentController.addUserScript(userScript)
+            // Run check loop every 500ms
+            setInterval(skipAds, 500);
+        })();
+        """
     }
 }
