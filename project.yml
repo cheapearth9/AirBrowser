@@ -9,7 +9,7 @@ targets:
     platform: iOS
     deploymentTarget: "17.0"
     sources:
-      - AirBrowser
+      - path: AirBrowser
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.custom.AirBrowser
@@ -17,3 +17,4 @@ targets:
         GENERATE_INFOPLIST_FILE: NO
         CODE_SIGNING_ALLOWED: NO
         CODE_SIGNING_REQUIRED: NO
+        CODE_SIGN_IDENTITY: ""
