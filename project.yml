@@ -9,11 +9,7 @@ targets:
     platform: iOS
     deploymentTarget: "17.0"
     sources:
-      - AppDelegate.swift
-      - SceneDelegate.swift
-      - DisplayController.swift
-      - MainAppViewController.swift
-      - YouTubeAdBlocker.swift
+      - path: .
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.custom.AirBrowser
