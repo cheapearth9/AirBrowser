@@ -11,15 +11,16 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
         let roleString = String(describing: session.role)
 
         if roleString.contains("ExternalDisplay") || roleString.contains("external") || windowScene.screen !== UIScreen.main {
-            // 1. External Display: True independent desktop browser view
+            // 1. External Display: Independent desktop browser view
             let extWindow = UIWindow(windowScene: windowScene)
             
-            // Explicit type annotations to prevent compiler ambiguity
             let webView: WKWebView = DisplayController.shared.webView
             let cursorView: UIView = DisplayController.shared.cursorView
             
             let extVC = ExternalBrowserViewController(webView: webView, cursorView: cursorView)
             extWindow.rootViewController = extVC
+            
+            // Explicitly make key and visible so mouse/keyboard events route to the external display
             extWindow.makeKeyAndVisible()
             
             self.externalWindow = extWindow
@@ -32,6 +33,15 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
             mainWindow.rootViewController = MainAppViewController()
             mainWindow.makeKeyAndVisible()
             self.window = mainWindow
+            
+            if DisplayController.shared.externalWindow == nil {
+                let webView: WKWebView = DisplayController.shared.webView
+                if webView.superview == nil {
+                    mainWindow.rootViewController?.view.addSubview(webView)
+                    webView.frame = mainWindow.rootViewController?.view.bounds ?? .zero
+                    webView.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+                }
+            }
         }
     }
 
@@ -42,10 +52,11 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
         if roleString.contains("ExternalDisplay") || roleString.contains("external") || windowScene.screen !== UIScreen.main {
             externalWindow?.isHidden = true
             externalWindow = nil
+            DisplayController.shared.externalWindow = nil
             DisplayController.shared.isExternalConnected = false
             DisplayController.shared.detachExternalScreen()
             
-            // Re-attach webView back to the main iPad screen cleanly upon disconnect
+            // Re-attach webView back to main iPad screen cleanly
             if let mainVC = self.window?.rootViewController {
                 let webView: WKWebView = DisplayController.shared.webView
                 webView.removeFromSuperview()
