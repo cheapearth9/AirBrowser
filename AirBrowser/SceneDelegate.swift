@@ -45,7 +45,7 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
 
     func sceneDidDisconnect(_ scene: UIScene) {
         guard let windowScene = scene as? UIWindowScene else { return }
-        let roleString = String(describing: session.role)
+        let roleString = String(describing: scene.session.role)
         
         if roleString.contains("ExternalDisplay") || roleString.contains("external") || windowScene.screen !== UIScreen.main {
             externalWindow?.isHidden = true
