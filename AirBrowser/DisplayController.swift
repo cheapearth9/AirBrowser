@@ -40,25 +40,10 @@ final class DisplayController: ObservableObject {
     private func setupScreenNotifications() {
         NotificationCenter.default.addObserver(
             self,
-            selector: #selector(screenConnected(_:)),
-            name: UIScreen.didConnectNotification,
-            object: nil
-        )
-        NotificationCenter.default.addObserver(
-            self,
             selector: #selector(screenDisconnected(_:)),
             name: UIScreen.didDisconnectNotification,
             object: nil
         )
-        
-        if UIScreen.screens.count > 1 {
-            attachToExternalScreen(UIScreen.screens[1])
-        }
-    }
-
-    @objc private func screenConnected(_ notification: Notification) {
-        guard let screen = notification.object as? UIScreen else { return }
-        attachToExternalScreen(screen)
     }
 
     @objc private func screenDisconnected(_ notification: Notification) {
@@ -85,7 +70,7 @@ final class DisplayController: ObservableObject {
         vc.view.addSubview(cursorView)
 
         window.rootViewController = vc
-        window.isHidden = false
+        window.makeKeyAndVisible() // Breaks system mirroring and forces standalone external output
 
         self.externalWindow = window
         self.isExternalConnected = true
