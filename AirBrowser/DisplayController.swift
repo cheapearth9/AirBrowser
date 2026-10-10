@@ -21,7 +21,7 @@ final class DisplayController: ObservableObject {
         self.webView = WKWebView(frame: .zero, configuration: config)
         self.webView.autoresizingMask = [.flexibleWidth, .flexibleHeight]
         
-        // macOS Safari User-Agent for desktop-class Safari layout
+        // macOS Safari User-Agent for desktop-class layout
         self.webView.customUserAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Safari/605.1.15"
         
         setupCursorView()
@@ -73,7 +73,7 @@ final class DisplayController: ObservableObject {
         vc.view.addSubview(cursorView)
 
         window.rootViewController = vc
-        window.makeKeyAndVisible()
+        window.isHidden = false // FIXED: Prevents stealing key status and stops system mirroring
 
         self.externalWindow = window
         self.isExternalConnected = true
