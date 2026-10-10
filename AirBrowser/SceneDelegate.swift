@@ -8,8 +8,7 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
     func scene(_ scene: UIScene, willConnectTo session: UISceneSession, options connectionOptions: UIScene.ConnectionOptions) {
         guard let windowScene = scene as? UIWindowScene else { return }
 
-        // Use raw string to avoid compiler errors on restricted SDK toolchains
-        if session.role.rawValue == "UIWindowSceneSessionRoleExternalDisplay" {
+        if session.role == .windowExternalDisplay {
             // 1. External Display: True independent desktop browser view
             let extWindow = UIWindow(windowScene: windowScene)
             
@@ -41,7 +40,7 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
     }
 
     func sceneDidDisconnect(_ scene: UIScene) {
-        if scene.session.role.rawValue == "UIWindowSceneSessionRoleExternalDisplay" {
+        if scene.session.role == .windowExternalDisplay {
             externalWindow?.isHidden = true
             externalWindow = nil
             DisplayController.shared.detachExternalScreen()
