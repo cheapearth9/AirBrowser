@@ -5,8 +5,6 @@ class MainAppViewController: UIViewController, WKNavigationDelegate, UITextField
 
     var webView: WKWebView!
     var urlTextField: UITextField!
-    private var externalWindow: UIWindow?
-    
     private var isAirPlayModeActive: Bool = false {
         didSet {
             airPlayToggleButton.setTitle(isAirPlayModeActive ? "AirPlay: ON" : "AirPlay: OFF", for: .normal)
@@ -81,10 +79,6 @@ class MainAppViewController: UIViewController, WKNavigationDelegate, UITextField
             webView.load(URLRequest(url: url))
             urlTextField.text = "https://www.google.com"
         }
-
-        // Hardware connection listeners (keeps HDMI support intact)
-        NotificationCenter.default.addObserver(self, selector: #selector(screenDidConnect), name: UIScreen.didConnectNotification, object: nil)
-        NotificationCenter.default.addObserver(self, selector: #selector(screenDidDisconnect), name: UIScreen.didDisconnectNotification, object: nil)
     }
 
     private func createButton(title: String, action: Selector) -> UIButton {
@@ -137,27 +131,12 @@ class MainAppViewController: UIViewController, WKNavigationDelegate, UITextField
         urlTextField.text = webView.url?.absoluteString
     }
 
-    // MARK: - External Screen & Toggle Routing
-    @objc func screenDidConnect(_ notification: Notification) {
-        updateExternalDisplayState()
-    }
-
-    @objc func screenDidDisconnect(_ notification: Notification) {
-        externalWindow?.isHidden = true
-        externalWindow = nil
-    }
-
+    // MARK: - External Screen & Toggle Routing via DisplayController Singleton
     private func updateExternalDisplayState() {
         if isAirPlayModeActive && UIScreen.screens.count > 1 {
-            let screen = UIScreen.screens[1]
-            let extWindow = UIWindow(frame: screen.bounds)
-            extWindow.screen = screen
-            extWindow.rootViewController = DisplayController()
-            extWindow.isHidden = false
-            self.externalWindow = extWindow
+            DisplayController.shared.attachToExternalScreen(UIScreen.screens[1])
         } else {
-            externalWindow?.isHidden = true
-            externalWindow = nil
+            DisplayController.shared.detachExternalScreen()
         }
     }
 }
