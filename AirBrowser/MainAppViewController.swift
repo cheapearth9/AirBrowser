@@ -53,19 +53,22 @@ class MainAppViewController: UIViewController, UITextFieldDelegate, WKNavigation
         topStack.translatesAutoresizingMaskIntoConstraints = false
         toolbar.addSubview(topStack)
 
-        // 2. Setup Web View with Modern User-Agent configuration & Edge Swipe Gestures
+        // 2. Setup Web View with macOS Safari User-Agent & Edge Swipe Gestures
         let config = WKWebViewConfiguration()
         config.allowsInlineMediaPlayback = true
         
         webView = WKWebView(frame: .zero, configuration: config)
         webView.translatesAutoresizingMaskIntoConstraints = false
         webView.navigationDelegate = self
-        webView.allowsBackForwardNavigationGestures = true // Enables native edge swipe for back/forward!
+        webView.allowsBackForwardNavigationGestures = true
         
-        // Fix "old look" by applying a modern Safari user agent string
-        webView.customUserAgent = "Mozilla/5.0 (iPad; CPU OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1"
+        // macOS Safari User-Agent for desktop-class layout
+        webView.customUserAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Safari/605.1.15"
         
         view.addSubview(webView)
+
+        // Also assign delegate to DisplayController's webView so back/forward updates URL bar there too
+        DisplayController.shared.webView.navigationDelegate = self
 
         // 3. Setup Touchpad Container (Hidden initially)
         trackpadContainer = UIView()
@@ -180,17 +183,17 @@ class MainAppViewController: UIViewController, UITextFieldDelegate, WKNavigation
 
     @objc func goBack() {
         if isAirPlayModeActive {
-            DisplayController.shared.webView.goBack()
-        } else if webView.canGoBack {
-            webView.goBack()
+            if DisplayController.shared.webView.canGoBack { DisplayController.shared.webView.goBack() }
+        } else {
+            if webView.canGoBack { webView.goBack() }
         }
     }
 
     @objc func goForward() {
         if isAirPlayModeActive {
-            DisplayController.shared.webView.goForward()
-        } else if webView.canGoForward {
-            webView.goForward()
+            if DisplayController.shared.webView.canGoForward { DisplayController.shared.webView.goForward() }
+        } else {
+            if webView.canGoForward { webView.goForward() }
         }
     }
 
@@ -235,9 +238,16 @@ class MainAppViewController: UIViewController, UITextFieldDelegate, WKNavigation
         return true
     }
 
+    // MARK: - WKNavigationDelegate (Updates URL bar dynamically on back/forward/swipes)
+    func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
+        if let urlString = webView.url?.absoluteString {
+            urlTextField.text = urlString
+        }
+    }
+
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
-        if !isAirPlayModeActive {
-            urlTextField.text = webView.url?.absoluteString
+        if let urlString = webView.url?.absoluteString {
+            urlTextField.text = urlString
         }
     }
 
