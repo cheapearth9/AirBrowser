@@ -8,12 +8,15 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
     func scene(_ scene: UIScene, willConnectTo session: UISceneSession, options connectionOptions: UIScene.ConnectionOptions) {
         guard let windowScene = scene as? UIWindowScene else { return }
 
-        if windowScene.screen !== UIScreen.main {
+        let roleString = String(describing: session.role)
+
+        if roleString.contains("ExternalDisplay") || roleString.contains("external") || windowScene.screen !== UIScreen.main {
             // 1. External Display: True independent desktop browser view
             let extWindow = UIWindow(windowScene: windowScene)
             
-            let webView = DisplayController.shared.webView
-            let cursorView :UIView = DisplayController.shared.cursorView
+            // Explicit type annotations to prevent compiler ambiguity
+            let webView: WKWebView = DisplayController.shared.webView
+            let cursorView: UIView = DisplayController.shared.cursorView
             
             let extVC = ExternalBrowserViewController(webView: webView, cursorView: cursorView)
             extWindow.rootViewController = extVC
@@ -33,22 +36,24 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
     }
 
     func sceneDidDisconnect(_ scene: UIScene) {
-        guard let windowScene = scene as? UIWindowScene else { return }
+        guard let windowScene = scene as? UIScene else { return }
+        let roleString = String(describing: scene.session.role)
         
-        if windowScene.screen !== UIScreen.main {
+        if roleString.contains("ExternalDisplay") || roleString.contains("external") || windowScene.screen !== UIScreen.main {
             externalWindow?.isHidden = true
             externalWindow = nil
             DisplayController.shared.isExternalConnected = false
             DisplayController.shared.detachExternalScreen()
             
-            // Re-attach webView back to the main iPad screen when external display disconnects
+            // Re-attach webView back to the main iPad screen cleanly upon disconnect
             if let mainVC = self.window?.rootViewController {
-                let webView = DisplayController.shared.webView
+                let webView: WKWebView = DisplayController.shared.webView
                 webView.removeFromSuperview()
                 webView.translatesAutoresizingMaskIntoConstraints = true
                 webView.frame = mainVC.view.bounds
                 webView.autoresizingMask = [.flexibleWidth, .flexibleHeight]
                 mainVC.view.addSubview(webView)
+                mainVC.view.layoutIfNeeded()
             }
         }
     }
@@ -86,5 +91,6 @@ class ExternalBrowserViewController: UIViewController {
         
         cursorView.removeFromSuperview()
         view.addSubview(cursorView)
+        view.layoutIfNeeded()
     }
 }
