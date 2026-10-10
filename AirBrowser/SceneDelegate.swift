@@ -8,17 +8,14 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
     func scene(_ scene: UIScene, willConnectTo session: UISceneSession, options connectionOptions: UIScene.ConnectionOptions) {
         guard let windowScene = scene as? UIWindowScene else { return }
 
-        let roleString = String(describing: session.role)
-
-        if roleString.contains("ExternalDisplay") || roleString.contains("external") {
+        if windowScene.screen !== UIScreen.main {
             // 1. External Display: True independent desktop browser view
             let extWindow = UIWindow(windowScene: windowScene)
             
             let webView = DisplayController.shared.webView
-            let cursorView: UIView = DisplayController.shared.cursorView
+            let cursorView = DisplayController.shared.cursorView
             
             let extVC = ExternalBrowserViewController(webView: webView, cursorView: cursorView)
-            
             extWindow.rootViewController = extVC
             extWindow.makeKeyAndVisible()
             
@@ -36,12 +33,23 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
     }
 
     func sceneDidDisconnect(_ scene: UIScene) {
-        let roleString = String(describing: scene.session.role)
-        if roleString.contains("ExternalDisplay") || roleString.contains("external") {
+        guard let windowScene = scene as? UIWindowScene else { return }
+        
+        if windowScene.screen !== UIScreen.main {
             externalWindow?.isHidden = true
             externalWindow = nil
             DisplayController.shared.isExternalConnected = false
             DisplayController.shared.detachExternalScreen()
+            
+            // Re-attach webView back to the main iPad screen when external display disconnects
+            if let mainVC = self.window?.rootViewController {
+                let webView = DisplayController.shared.webView
+                webView.removeFromSuperview()
+                webView.translatesAutoresizingMaskIntoConstraints = true
+                webView.frame = mainVC.view.bounds
+                webView.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+                mainVC.view.addSubview(webView)
+            }
         }
     }
 }
@@ -65,7 +73,6 @@ class ExternalBrowserViewController: UIViewController {
         super.viewDidLoad()
         view.backgroundColor = .black
         
-        // Setup web view to fill the external display
         webView.removeFromSuperview()
         webView.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(webView)
@@ -77,7 +84,6 @@ class ExternalBrowserViewController: UIViewController {
             webView.trailingAnchor.constraint(equalTo: view.trailingAnchor)
         ])
         
-        // Add cursor view as an overlay without stretching it across the screen bounds
         cursorView.removeFromSuperview()
         view.addSubview(cursorView)
     }
