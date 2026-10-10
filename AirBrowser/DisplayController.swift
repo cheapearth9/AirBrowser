@@ -5,8 +5,8 @@ final class DisplayController: ObservableObject {
     static let shared = DisplayController()
 
     let webView: WKWebView
-    private(set) var externalWindow: UIWindow?
-    private(set) var cursorView: UIView!
+    var externalWindow: UIWindow?
+    var cursorView: UIView!
     
     @Published var isExternalConnected: Bool = false
     @Published var cursorPosition: CGPoint = .zero
