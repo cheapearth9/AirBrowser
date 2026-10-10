@@ -6,11 +6,9 @@ class MainAppViewController: UIViewController, UITextFieldDelegate, WKNavigation
     var webView: WKWebView!
     var urlTextField: UITextField!
     
-    // Touchpad UI Elements (Hidden by default, shown when AirPlay is ON)
     private var trackpadContainer: UIView!
     private var trackpadView: UIView!
     private var keyboardTriggerButton: UIButton!
-    
     private var airPlayToggleButton: UIButton!
 
     private var isAirPlayModeActive: Bool = false {
@@ -25,7 +23,7 @@ class MainAppViewController: UIViewController, UITextFieldDelegate, WKNavigation
         super.viewDidLoad()
         view.backgroundColor = .systemBackground
 
-        // 1. Setup Top Toolbar (Back, Forward, URL Bar, AirPlay Toggle, Settings)
+        // 1. Setup Top Toolbar
         let toolbar = UIView()
         toolbar.translatesAutoresizingMaskIntoConstraints = false
         toolbar.backgroundColor = .secondarySystemBackground
@@ -44,7 +42,6 @@ class MainAppViewController: UIViewController, UITextFieldDelegate, WKNavigation
         
         airPlayToggleButton = createButton(title: "AirPlay: OFF", action: #selector(toggleAirPlayMode))
         airPlayToggleButton.titleLabel?.font = .systemFont(ofSize: 12, weight: .bold)
-        // Hidden by default until an external screen is connected
         airPlayToggleButton.isHidden = (UIScreen.screens.count <= 1)
 
         let settingsButton = createButton(title: "⚙️", action: #selector(openSettings))
@@ -56,10 +53,18 @@ class MainAppViewController: UIViewController, UITextFieldDelegate, WKNavigation
         topStack.translatesAutoresizingMaskIntoConstraints = false
         toolbar.addSubview(topStack)
 
-        // 2. Setup Normal Web View (Default state on iPad)
-        webView = WKWebView(frame: .zero)
+        // 2. Setup Web View with Modern User-Agent configuration & Edge Swipe Gestures
+        let config = WKWebViewConfiguration()
+        config.allowsInlineMediaPlayback = true
+        
+        webView = WKWebView(frame: .zero, configuration: config)
         webView.translatesAutoresizingMaskIntoConstraints = false
         webView.navigationDelegate = self
+        webView.allowsBackForwardNavigationGestures = true // Enables native edge swipe for back/forward!
+        
+        // Fix "old look" by applying a modern Safari user agent string
+        webView.customUserAgent = "Mozilla/5.0 (iPad; CPU OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1"
+        
         view.addSubview(webView)
 
         // 3. Setup Touchpad Container (Hidden initially)
@@ -96,7 +101,7 @@ class MainAppViewController: UIViewController, UITextFieldDelegate, WKNavigation
         keyboardTriggerButton.addTarget(self, action: #selector(triggerKeyboard), for: .touchUpInside)
         trackpadContainer.addSubview(keyboardTriggerButton)
 
-        // Layout Constraints
+        // Constraints
         NSLayoutConstraint.activate([
             toolbar.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
             toolbar.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor),
@@ -112,13 +117,11 @@ class MainAppViewController: UIViewController, UITextFieldDelegate, WKNavigation
             airPlayToggleButton.widthAnchor.constraint(equalToConstant: 90),
             settingsButton.widthAnchor.constraint(equalToConstant: 36),
 
-            // Web View Constraints
             webView.topAnchor.constraint(equalTo: toolbar.bottomAnchor),
             webView.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor),
             webView.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor),
             webView.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor),
 
-            // Touchpad Container Constraints
             trackpadContainer.topAnchor.constraint(equalTo: toolbar.bottomAnchor),
             trackpadContainer.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor),
             trackpadContainer.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor),
@@ -140,13 +143,11 @@ class MainAppViewController: UIViewController, UITextFieldDelegate, WKNavigation
 
         setupGestures()
 
-        // Load default start page
         if let url = URL(string: "https://www.google.com") {
             webView.load(URLRequest(url: url))
             urlTextField.text = "https://www.google.com"
         }
 
-        // Screen Connection Listeners
         NotificationCenter.default.addObserver(self, selector: #selector(screenDidConnect), name: UIScreen.didConnectNotification, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(screenDidDisconnect), name: UIScreen.didDisconnectNotification, object: nil)
     }
@@ -210,7 +211,6 @@ class MainAppViewController: UIViewController, UITextFieldDelegate, WKNavigation
         present(alert, animated: true)
     }
 
-    // MARK: - URL Navigation
     func textFieldShouldReturn(_ textField: UITextField) -> Bool {
         textField.resignFirstResponder()
         guard let text = textField.text, !text.isEmpty else { return true }
@@ -241,7 +241,6 @@ class MainAppViewController: UIViewController, UITextFieldDelegate, WKNavigation
         }
     }
 
-    // MARK: - Screen Connection & Layout Switching
     @objc func screenDidConnect(_ notification: Notification) {
         airPlayToggleButton.isHidden = false
     }
@@ -254,17 +253,14 @@ class MainAppViewController: UIViewController, UITextFieldDelegate, WKNavigation
 
     private func updateLayoutForAirPlayMode() {
         if isAirPlayModeActive && UIScreen.screens.count > 1 {
-            // Switch iPad to Touchpad Mode & project browser to external display
             webView.isHidden = true
             trackpadContainer.isHidden = false
             
-            // Sync current URL to external display before projecting
             if let currentURL = webView.url {
                 DisplayController.shared.webView.load(URLRequest(url: currentURL))
             }
             DisplayController.shared.attachToExternalScreen(UIScreen.screens[1])
         } else {
-            // Switch iPad back to Normal Browser Mode
             webView.isHidden = false
             trackpadContainer.isHidden = true
             DisplayController.shared.detachExternalScreen()
