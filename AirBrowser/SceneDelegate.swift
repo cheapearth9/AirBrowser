@@ -8,7 +8,7 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
     func scene(_ scene: UIScene, willConnectTo session: UISceneSession, options connectionOptions: UIScene.ConnectionOptions) {
         guard let windowScene = scene as? UIWindowScene else { return }
 
-        if session.role.rawValue == "UIWindowSceneSessionRoleExternalDisplay" {
+        if session.role == .windowExternalDisplay {
             // 1. External Display: True independent desktop browser view
             let extWindow = UIWindow(windowScene: windowScene)
             
@@ -32,16 +32,15 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
             
         } else {
             // 2. Main iPad Screen: Touchpad / Controller interface
-            let mainWindow = UIWindow(windowScene: windowScene)
-            mainWindow.rootViewController = MainAppViewController()
-            mainWindow.makeKeyAndVisible()
-            self.window = mainWindow
+            let window = UIWindow(windowScene: windowScene)
+            window.rootViewController = MainAppViewController()
+            window.makeKeyAndVisible()
+            self.window = window
         }
     }
 
     func sceneDidDisconnect(_ scene: UIScene) {
-        // Use scene.session instead of unlinked 'session' variable
-        if scene.session.role.rawValue == "UIWindowSceneSessionRoleExternalDisplay" {
+        if scene.session.role == .windowExternalDisplay {
             externalWindow?.isHidden = true
             externalWindow = nil
             DisplayController.shared.detachExternalScreen()
