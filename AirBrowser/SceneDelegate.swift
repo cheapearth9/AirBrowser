@@ -8,7 +8,7 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
     func scene(_ scene: UIScene, willConnectTo session: UISceneSession, options connectionOptions: UIScene.ConnectionOptions) {
         guard let windowScene = scene as? UIWindowScene else { return }
 
-        let roleString = String(describing: session.role)
+        let roleString = String(describing: scene.session.role)
 
         if roleString.contains("ExternalDisplay") || roleString.contains("external") || windowScene.screen !== UIScreen.main {
             // 1. External Display: Independent desktop browser view
@@ -33,7 +33,7 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
             self.window = mainWindow
             
             DisplayController.shared.externalWindow = nil
-            DisplayController.shared.isExternalConnected = false
+            // Note: We leave isExternalConnected alone here so the app retains its toggled-on preference!
         }
     }
 
@@ -45,8 +45,10 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
             externalWindow?.isHidden = true
             externalWindow = nil
             DisplayController.shared.externalWindow = nil
-            DisplayController.shared.isExternalConnected = false
             DisplayController.shared.detachExternalScreen()
+            
+            // Keep isExternalConnected = true so the app state stays toggled on
+            // DisplayController.shared.isExternalConnected remains true
             
             if let window = self.window {
                 window.rootViewController = MainAppViewController()
