@@ -1,148 +1,110 @@
 import UIKit
-import Combine
+import WebKit
+import AVKit
 
-class MainAppViewController: UIViewController, UITextFieldDelegate {
+class MainAppViewController: UIViewController, WKNavigationDelegate {
 
-    private let urlBar = UITextField()
-    private let trackpadView = UIView()
-    private let keyboardTriggerButton = UIButton(type: .system)
-    private var cancellables = Set<AnyCancellable>()
+    var webView: WKWebView!
+    private var externalWindow: UIWindow?
 
     override func viewDidLoad() {
         super.viewDidLoad()
-        setupUI()
-        setupGestureRecognizers()
-        bindDisplayState()
-
-        if let url = URL(string: "https://www.youtube.com") {
-            DisplayController.shared.webView.load(URLRequest(url: url))
-        }
-    }
-
-    private func setupUI() {
         view.backgroundColor = .systemBackground
 
-        urlBar.borderStyle = .roundedRect
-        urlBar.placeholder = "Enter URL or Search YouTube..."
-        urlBar.autocapitalizationType = .none
-        urlBar.autocorrectionType = .no
-        urlBar.keyboardType = .URL
-        urlBar.returnKeyType = .go
-        urlBar.delegate = self
-        urlBar.translatesAutoresizingMaskIntoConstraints = false
+        // 1. Setup Navigation Toolbar
+        let toolbar = UIView()
+        toolbar.translatesAutoresizingMaskIntoConstraints = false
+        toolbar.backgroundColor = .secondarySystemBackground
+        view.addSubview(toolbar)
 
-        trackpadView.backgroundColor = .secondarySystemBackground
-        trackpadView.layer.cornerRadius = 16
-        trackpadView.layer.borderWidth = 1
-        trackpadView.layer.borderColor = UIColor.separator.cgColor
-        trackpadView.translatesAutoresizingMaskIntoConstraints = false
+        let backButton = createButton(title: "◄", action: #selector(goBack))
+        let forwardButton = createButton(title: "►", action: #selector(goForward))
+        let settingsButton = createButton(title: "⚙️", action: #selector(openSettings))
 
-        keyboardTriggerButton.setTitle("Show Keyboard", for: .normal)
-        keyboardTriggerButton.setImage(UIImage(systemName: "keyboard"), for: .normal)
-        keyboardTriggerButton.addTarget(self, action: #selector(toggleKeyboard), for: .touchUpInside)
-        keyboardTriggerButton.translatesAutoresizingMaskIntoConstraints = false
+        let airPlayPicker = AVRoutePickerView()
+        airPlayPicker.translatesAutoresizingMaskIntoConstraints = false
+        airPlayPicker.activeTintColor = .systemBlue
+        airPlayPicker.tintColor = .label
 
-        view.addSubview(urlBar)
-        view.addSubview(trackpadView)
-        view.addSubview(keyboardTriggerButton)
+        let stack = UIStackView(arrangedSubviews: [backButton, forwardButton, airPlayPicker, settingsButton])
+        stack.axis = .horizontal
+        stack.distribution = .equalSpacing
+        stack.alignment = .center
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        toolbar.addSubview(stack)
+
+        // 2. Setup WebView (Touchpad / Control Interface on iPad)
+        webView = WKWebView(frame: .zero)
+        webView.translatesAutoresizingMaskIntoConstraints = false
+        webView.navigationDelegate = self
+        view.addSubview(webView)
 
         NSLayoutConstraint.activate([
-            urlBar.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 12),
-            urlBar.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
-            urlBar.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
+            toolbar.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
+            toolbar.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor),
+            toolbar.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor),
+            toolbar.heightAnchor.constraint(equalToConstant: 44),
 
-            trackpadView.topAnchor.constraint(equalTo: urlBar.bottomAnchor, constant: 16),
-            trackpadView.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
-            trackpadView.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
-            trackpadView.bottomAnchor.constraint(equalTo: keyboardTriggerButton.topAnchor, constant: -12),
+            stack.centerYAnchor.constraint(equalTo: toolbar.centerYAnchor),
+            stack.leadingAnchor.constraint(equalTo: toolbar.leadingAnchor, constant: 16),
+            stack.trailingAnchor.constraint(equalTo: toolbar.trailingAnchor, constant: -16),
 
-            keyboardTriggerButton.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -12),
-            keyboardTriggerButton.centerXAnchor.constraint(equalTo: view.centerXAnchor)
+            webView.topAnchor.constraint(equalTo: toolbar.bottomAnchor),
+            webView.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor),
+            webView.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor),
+            webView.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor)
         ])
-    }
 
-    private func bindDisplayState() {
-        DisplayController.shared.$isExternalConnected
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] isConnected in
-                self?.updateLayoutForDisplayMode(isExternalConnected: isConnected)
-            }
-            .store(in: &cancellables)
-    }
+        if let url = URL(string: "https://www.google.com") {
+            webView.load(URLRequest(url: url))
+        }
 
-    private func updateLayoutForDisplayMode(isExternalConnected: Bool) {
-        if isExternalConnected {
-            DisplayController.shared.webView.removeFromSuperview()
-            trackpadView.isHidden = false
-            keyboardTriggerButton.isHidden = false
-        } else {
-            trackpadView.isHidden = true
-            keyboardTriggerButton.isHidden = true
-            
-            let webView = DisplayController.shared.webView
-            webView.frame = .zero
-            webView.translatesAutoresizingMaskIntoConstraints = false
-            view.addSubview(webView)
+        // 3. Intercept HDMI Hardware Connection Directly
+        NotificationCenter.default.addObserver(self, selector: #selector(screenDidConnect), name: UIScreen.didConnectNotification, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(screenDidDisconnect), name: UIScreen.didDisconnectNotification, object: nil)
 
-            NSLayoutConstraint.activate([
-                webView.topAnchor.constraint(equalTo: urlBar.bottomAnchor, constant: 12),
-                webView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
-                webView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-                webView.bottomAnchor.constraint(equalTo: view.bottomAnchor)
-            ])
+        // Check if HDMI is already plugged in at launch
+        if UIScreen.screens.count > 1 {
+            activateExternalDisplay(UIScreen.screens[1])
         }
     }
 
-    private func setupGestureRecognizers() {
-        let panGesture = UIPanGestureRecognizer(target: self, action: #selector(handlePan(_:)))
-        panGesture.maximumNumberOfTouches = 1
-        trackpadView.addGestureRecognizer(panGesture)
-
-        let tapGesture = UITapGestureRecognizer(target: self, action: #selector(handleTap(_:)))
-        trackpadView.addGestureRecognizer(tapGesture)
-
-        let scrollGesture = UIPanGestureRecognizer(target: self, action: #selector(handleScroll(_:)))
-        scrollGesture.minimumNumberOfTouches = 2
-        scrollGesture.maximumNumberOfTouches = 2
-        trackpadView.addGestureRecognizer(scrollGesture)
+    private func createButton(title: String, action: Selector) -> UIButton {
+        let btn = UIButton(type: .system)
+        btn.setTitle(title, for: .normal)
+        btn.titleLabel?.font = .systemFont(ofSize: 18, weight: .bold)
+        btn.addTarget(self, action: action, for: .touchUpInside)
+        return btn
     }
 
-    @objc private func handlePan(_ gesture: UIPanGestureRecognizer) {
-        let translation = gesture.translation(in: trackpadView)
-        DisplayController.shared.moveCursor(deltaX: translation.x, deltaY: translation.y)
-        gesture.setTranslation(.zero, in: trackpadView)
+    @objc func goBack() { if webView.canGoBack { webView.goBack() } }
+    @objc func goForward() { if webView.canGoForward { webView.goForward() } }
+
+    @objc func openSettings() {
+        let alert = UIAlertController(title: "AirBrowser Settings", message: "Choose an action:", preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: "Clear Browser Cache", style: .default) { _ in
+            WKWebsiteDataStore.default().removeData(ofTypes: WKWebsiteDataStore.allWebsiteDataTypes(), modifiedSince: Date(timeIntervalSince1970: 0)) {}
+        })
+        alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
+        present(alert, animated: true)
     }
 
-    @objc private func handleTap(_ gesture: UITapGestureRecognizer) {
-        DisplayController.shared.performClickAtCursor()
+    @objc func screenDidConnect(_ notification: Notification) {
+        guard let screen = notification.object as? UIScreen else { return }
+        activateExternalDisplay(screen)
     }
 
-    @objc private func handleScroll(_ gesture: UIPanGestureRecognizer) {
-        let translation = gesture.translation(in: trackpadView)
-        DisplayController.shared.performScroll(deltaY: -translation.y)
-        gesture.setTranslation(.zero, in: trackpadView)
+    @objc func screenDidDisconnect(_ notification: Notification) {
+        externalWindow?.isHidden = true
+        externalWindow = nil
     }
 
-    @objc private func toggleKeyboard() {
-        if urlBar.isFirstResponder {
-            urlBar.resignFirstResponder()
-        } else {
-            urlBar.becomeFirstResponder()
-        }
-    }
-
-    func textFieldShouldReturn(_ textField: UITextField) -> Bool {
-        textField.resignFirstResponder()
-        guard let text = textField.text, !text.isEmpty else { return true }
-        
-        var urlString = text
-        if !urlString.lowercased().hasPrefix("http://") && !urlString.lowercased().hasPrefix("https://") {
-            urlString = "https://" + urlString
-        }
-
-        if let url = URL(string: urlString) {
-            DisplayController.shared.webView.load(URLRequest(url: url))
-        }
-        return true
+    private func activateExternalDisplay(_ screen: UIScreen) {
+        // Programmatically bind DisplayController to the external monitor hardware
+        let extWindow = UIWindow(frame: screen.bounds)
+        extWindow.screen = screen
+        extWindow.rootViewController = DisplayController()
+        extWindow.isHidden = false
+        self.externalWindow = extWindow
     }
 }
