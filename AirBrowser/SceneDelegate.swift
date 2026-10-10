@@ -32,10 +32,10 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
             
         } else {
             // 2. Main iPad Screen: Touchpad / Controller interface
-            let window = UIWindow(windowScene: windowScene)
-            window.rootViewController = MainAppViewController()
-            window.makeKeyAndVisible()
-            self.window = window
+            let mainWindow = UIWindow(windowScene: windowScene)
+            mainWindow.rootViewController = MainAppViewController()
+            mainWindow.makeKeyAndVisible()
+            self.window = mainWindow
         }
     }
 
