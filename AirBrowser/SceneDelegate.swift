@@ -13,7 +13,7 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
             let extWindow = UIWindow(windowScene: windowScene)
             
             let webView = DisplayController.shared.webView
-            let cursorView = DisplayController.shared.cursorView
+            let cursorView :UIView = DisplayController.shared.cursorView
             
             let extVC = ExternalBrowserViewController(webView: webView, cursorView: cursorView)
             extWindow.rootViewController = extVC
