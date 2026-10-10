@@ -6,7 +6,7 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
     var externalWindow: UIWindow?
 
     func scene(_ scene: UIScene, willConnectTo session: UISceneSession, options connectionOptions: UIScene.ConnectionOptions) {
-        guard let windowScene = scene as? UIWindowScene else { return }
+        guard let windowScene = scene as? UIScene else { return }
 
         let roleString = String(describing: session.role)
 
@@ -19,8 +19,6 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
             
             let extVC = ExternalBrowserViewController(webView: webView, cursorView: cursorView)
             extWindow.rootViewController = extVC
-            
-            // Explicitly make key and visible so mouse/keyboard events route to the external display
             extWindow.makeKeyAndVisible()
             
             self.externalWindow = extWindow
@@ -30,24 +28,32 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
         } else {
             // 2. Main iPad Screen: Touchpad / Controller interface
             let mainWindow = UIWindow(windowScene: windowScene)
-            mainWindow.rootViewController = MainAppViewController()
+            let mainVC = MainAppViewController()
+            mainWindow.rootViewController = mainVC
             mainWindow.makeKeyAndVisible()
             self.window = mainWindow
             
+            // If no external display is active, host the webView on the main iPad screen using Auto Layout
             if DisplayController.shared.externalWindow == nil {
                 let webView: WKWebView = DisplayController.shared.webView
-                if webView.superview == nil {
-                    mainWindow.rootViewController?.view.addSubview(webView)
-                    webView.frame = mainWindow.rootViewController?.view.bounds ?? .zero
-                    webView.autoresizingMask = [.flexibleWidth, .flexibleHeight]
-                }
+                webView.removeFromSuperview()
+                webView.translatesAutoresizingMaskIntoConstraints = false
+                mainVC.view.addSubview(webView)
+                
+                NSLayoutConstraint.activate([
+                    webView.topAnchor.constraint(equalTo: mainVC.view.topAnchor),
+                    webView.bottomAnchor.constraint(equalTo: mainVC.view.bottomAnchor),
+                    webView.leadingAnchor.constraint(equalTo: mainVC.view.leadingAnchor),
+                    webView.trailingAnchor.constraint(equalTo: mainVC.view.trailingAnchor)
+                ])
+                mainVC.view.layoutIfNeeded()
             }
         }
     }
 
     func sceneDidDisconnect(_ scene: UIScene) {
-        guard let windowScene = scene as? UIWindowScene else { return }
-        let roleString = String(describing: scene.session.role)
+        guard let windowScene = scene as? UIScene else { return }
+        let roleString = String(describing: session.role)
         
         if roleString.contains("ExternalDisplay") || roleString.contains("external") || windowScene.screen !== UIScreen.main {
             externalWindow?.isHidden = true
@@ -56,14 +62,19 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
             DisplayController.shared.isExternalConnected = false
             DisplayController.shared.detachExternalScreen()
             
-            // Re-attach webView back to main iPad screen cleanly
+            // Re-attach webView back to main iPad screen cleanly using Auto Layout upon disconnect
             if let mainVC = self.window?.rootViewController {
                 let webView: WKWebView = DisplayController.shared.webView
                 webView.removeFromSuperview()
-                webView.translatesAutoresizingMaskIntoConstraints = true
-                webView.frame = mainVC.view.bounds
-                webView.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+                webView.translatesAutoresizingMaskIntoConstraints = false
                 mainVC.view.addSubview(webView)
+                
+                NSLayoutConstraint.activate([
+                    webView.topAnchor.constraint(equalTo: mainVC.view.topAnchor),
+                    webView.bottomAnchor.constraint(equalTo: mainVC.view.bottomAnchor),
+                    webView.leadingAnchor.constraint(equalTo: mainVC.view.leadingAnchor),
+                    webView.trailingAnchor.constraint(equalTo: mainVC.view.trailingAnchor)
+                ])
                 mainVC.view.layoutIfNeeded()
             }
         }
