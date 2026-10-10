@@ -21,6 +21,9 @@ final class DisplayController: ObservableObject {
         self.webView = WKWebView(frame: .zero, configuration: config)
         self.webView.autoresizingMask = [.flexibleWidth, .flexibleHeight]
         
+        // Modern User-Agent so Google & AI Overview render correctly on external display
+        self.webView.customUserAgent = "Mozilla/5.0 (iPad; CPU OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1"
+        
         setupCursorView()
         setupScreenNotifications()
     }
