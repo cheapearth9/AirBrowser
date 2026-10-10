@@ -1,28 +1,38 @@
 import UIKit
 import WebKit
 
-final class DisplayController: ObservableObject {
+class DisplayController: UIViewController, WKNavigationDelegate {
     static let shared = DisplayController()
 
-    let webView: WKWebView
-    private(set) var externalWindow: UIWindow?
+    var webView: WKWebView!
     private(set) var cursorView: UIView!
     
-    @Published var isExternalConnected: Bool = false
-    @Published var cursorPosition: CGPoint = .zero
+    var cursorPosition: CGPoint = .zero {
+        didSet {
+            cursorView?.center = cursorPosition
+        }
+    }
 
-    private init() {
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        view.backgroundColor = .black
+
         let config = WKWebViewConfiguration()
         config.allowsInlineMediaPlayback = true
         config.mediaTypesRequiringUserActionForPlayback = []
         
         YouTubeAdBlocker.apply(to: config)
 
-        self.webView = WKWebView(frame: .zero, configuration: config)
-        self.webView.autoresizingMask = [.flexibleWidth, .flexibleHeight]
-        
+        webView = WKWebView(frame: view.bounds, configuration: config)
+        webView.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        webView.navigationDelegate = self
+        view.addSubview(webView)
+
         setupCursorView()
-        setupScreenNotifications()
+
+        if let url = URL(string: "https://www.youtube.com/tv") {
+            webView.load(URLRequest(url: url))
+        }
     }
 
     private func setupCursorView() {
@@ -35,85 +45,28 @@ final class DisplayController: ObservableObject {
         cursorView.layer.shadowRadius = 4
         cursorView.layer.shadowOpacity = 0.5
         cursorView.isUserInteractionEnabled = false
-    }
-
-    private func setupScreenNotifications() {
-        NotificationCenter.default.addObserver(
-            self,
-            selector: #selector(screenConnected(_:)),
-            name: UIScreen.didConnectNotification,
-            object: nil
-        )
-        NotificationCenter.default.addObserver(
-            self,
-            selector: #selector(screenDisconnected(_:)),
-            name: UIScreen.didDisconnectNotification,
-            object: nil
-        )
         
-        if UIScreen.screens.count > 1 {
-            attachToExternalScreen(UIScreen.screens[1])
-        }
+        // Center cursor initially
+        cursorPosition = CGPoint(x: view.bounds.midX, y: view.bounds.midY)
+        view.addSubview(cursorView)
     }
 
-    @objc private func screenConnected(_ notification: Notification) {
-        guard let screen = notification.object as? UIScreen else { return }
-        attachToExternalScreen(screen)
-    }
-
-    @objc private func screenDisconnected(_ notification: Notification) {
-        detachExternalScreen()
-    }
-
-    func attachToExternalScreen(_ screen: UIScreen) {
-        if let maxMode = screen.availableModes.max(by: { $0.size.width < $1.size.width }) {
-            screen.currentMode = maxMode
-        }
-
-        let window = UIWindow(frame: screen.bounds)
-        window.screen = screen
-
-        let vc = UIViewController()
-        vc.view.backgroundColor = .black
-
-        webView.removeFromSuperview()
-        webView.frame = vc.view.bounds
-        vc.view.addSubview(webView)
-
-        cursorPosition = CGPoint(x: screen.bounds.midX, y: screen.bounds.midY)
-        cursorView.center = cursorPosition
-        vc.view.addSubview(cursorView)
-
-        window.rootViewController = vc
-        window.isHidden = false
-
-        self.externalWindow = window
-        self.isExternalConnected = true
-    }
-
-    func detachExternalScreen() {
-        externalWindow?.isHidden = true
-        externalWindow = nil
-        isExternalConnected = false
-        cursorView.removeFromSuperview()
+    override func viewDidLayoutSubviews() {
+        super.viewDidLayoutSubviews()
+        webView.frame = view.bounds
     }
 
     func moveCursor(deltaX: CGFloat, deltaY: CGFloat) {
-        guard let window = externalWindow else { return }
-        
         var newX = cursorPosition.x + (deltaX * 1.5)
         var newY = cursorPosition.y + (deltaY * 1.5)
 
-        newX = max(0, min(window.bounds.width, newX))
-        newY = max(0, min(window.bounds.height, newY))
+        newX = max(0, min(view.bounds.width, newX))
+        newY = max(0, min(view.bounds.height, newY))
 
         cursorPosition = CGPoint(x: newX, y: newY)
-        cursorView.center = cursorPosition
     }
 
     func performClickAtCursor() {
-        guard isExternalConnected else { return }
-        
         let js = """
         (function() {
             const elem = document.elementFromPoint(\(cursorPosition.x), \(cursorPosition.y));
@@ -129,7 +82,6 @@ final class DisplayController: ObservableObject {
     }
 
     func performScroll(deltaY: CGFloat) {
-        guard isExternalConnected else { return }
         let js = "window.scrollBy(0, \(deltaY * 2.5));"
         webView.evaluateJavaScript(js)
     }
