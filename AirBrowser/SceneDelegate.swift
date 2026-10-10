@@ -6,7 +6,7 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
     var externalWindow: UIWindow?
 
     func scene(_ scene: UIScene, willConnectTo session: UISceneSession, options connectionOptions: UIScene.ConnectionOptions) {
-        guard let windowScene = scene as? UIWindowScene else { return }
+        guard let windowScene = scene as? UIScene else { return }
 
         let roleString = String(describing: session.role)
 
@@ -17,11 +17,6 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
             let webView: WKWebView = DisplayController.shared.webView
             let cursorView: UIView = DisplayController.shared.cursorView
             
-            // Ensure Google is loaded if empty
-            if webView.url == nil, let url = URL(string: "https://www.google.com") {
-                webView.load(URLRequest(url: url))
-            }
-            
             let extVC = ExternalBrowserViewController(webView: webView, cursorView: cursorView)
             extWindow.rootViewController = extVC
             extWindow.makeKeyAndVisible()
@@ -31,10 +26,9 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
             DisplayController.shared.isExternalConnected = true
             
         } else {
-            // 2. Main iPad Screen: Always show the normal AirBrowser controller interface
+            // 2. Main iPad Screen: Normal controller interface with touchpad & keyboard buttons
             let mainWindow = UIWindow(windowScene: windowScene)
-            let mainVC = MainAppViewController()
-            mainWindow.rootViewController = mainVC
+            mainWindow.rootViewController = MainAppViewController()
             mainWindow.makeKeyAndVisible()
             self.window = mainWindow
             
@@ -44,8 +38,8 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
     }
 
     func sceneDidDisconnect(_ scene: UIScene) {
-        guard let windowScene = scene as? UIWindowScene else { return }
-        let roleString = String(describing: scene.session.role)
+        guard let windowScene = scene as? UIScene else { return }
+        let roleString = String(describing: session.role)
         
         if roleString.contains("ExternalDisplay") || roleString.contains("external") || windowScene.screen !== UIScreen.main {
             externalWindow?.isHidden = true
@@ -54,7 +48,6 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
             DisplayController.shared.isExternalConnected = false
             DisplayController.shared.detachExternalScreen()
             
-            // Seamlessly restore the normal AirBrowser UI on the iPad upon disconnect
             if let window = self.window {
                 window.rootViewController = MainAppViewController()
             }
