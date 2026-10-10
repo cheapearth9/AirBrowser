@@ -1,26 +1,31 @@
 import UIKit
 import WebKit
 
-class MainAppViewController: UIViewController, UITextFieldDelegate {
+class MainAppViewController: UIViewController, UITextFieldDelegate, WKNavigationDelegate {
 
+    var webView: WKWebView!
     var urlTextField: UITextField!
+    
+    // Touchpad UI Elements (Hidden by default, shown when AirPlay is ON)
+    private var trackpadContainer: UIView!
     private var trackpadView: UIView!
     private var keyboardTriggerButton: UIButton!
     
+    private var airPlayToggleButton: UIButton!
+
     private var isAirPlayModeActive: Bool = false {
         didSet {
             airPlayToggleButton.setTitle(isAirPlayModeActive ? "AirPlay: ON" : "AirPlay: OFF", for: .normal)
             airPlayToggleButton.setTitleColor(isAirPlayModeActive ? .systemBlue : .systemGray, for: .normal)
-            updateExternalDisplayState()
+            updateLayoutForAirPlayMode()
         }
     }
-    private var airPlayToggleButton: UIButton!
 
     override func viewDidLoad() {
         super.viewDidLoad()
         view.backgroundColor = .systemBackground
 
-        // 1. Setup Control Toolbar (Back, Forward, URL Bar, AirPlay Toggle, Settings)
+        // 1. Setup Top Toolbar (Back, Forward, URL Bar, AirPlay Toggle, Settings)
         let toolbar = UIView()
         toolbar.translatesAutoresizingMaskIntoConstraints = false
         toolbar.backgroundColor = .secondarySystemBackground
@@ -39,6 +44,8 @@ class MainAppViewController: UIViewController, UITextFieldDelegate {
         
         airPlayToggleButton = createButton(title: "AirPlay: OFF", action: #selector(toggleAirPlayMode))
         airPlayToggleButton.titleLabel?.font = .systemFont(ofSize: 12, weight: .bold)
+        // Hidden by default until an external screen is connected
+        airPlayToggleButton.isHidden = (UIScreen.screens.count <= 1)
 
         let settingsButton = createButton(title: "⚙️", action: #selector(openSettings))
 
@@ -49,14 +56,25 @@ class MainAppViewController: UIViewController, UITextFieldDelegate {
         topStack.translatesAutoresizingMaskIntoConstraints = false
         toolbar.addSubview(topStack)
 
-        // 2. Setup iPad Touchpad & Keyboard Control Area
+        // 2. Setup Normal Web View (Default state on iPad)
+        webView = WKWebView(frame: .zero)
+        webView.translatesAutoresizingMaskIntoConstraints = false
+        webView.navigationDelegate = self
+        view.addSubview(webView)
+
+        // 3. Setup Touchpad Container (Hidden initially)
+        trackpadContainer = UIView()
+        trackpadContainer.translatesAutoresizingMaskIntoConstraints = false
+        trackpadContainer.isHidden = true
+        view.addSubview(trackpadContainer)
+
         trackpadView = UIView()
         trackpadView.translatesAutoresizingMaskIntoConstraints = false
         trackpadView.backgroundColor = .secondarySystemBackground.withAlphaComponent(0.5)
         trackpadView.layer.cornerRadius = 12
         trackpadView.layer.borderWidth = 1
         trackpadView.layer.borderColor = UIColor.separator.cgColor
-        view.addSubview(trackpadView)
+        trackpadContainer.addSubview(trackpadView)
 
         let touchpadLabel = UILabel()
         touchpadLabel.translatesAutoresizingMaskIntoConstraints = false
@@ -76,9 +94,9 @@ class MainAppViewController: UIViewController, UITextFieldDelegate {
         keyboardTriggerButton.layer.borderWidth = 1
         keyboardTriggerButton.layer.borderColor = UIColor.systemBlue.cgColor
         keyboardTriggerButton.addTarget(self, action: #selector(triggerKeyboard), for: .touchUpInside)
-        view.addSubview(keyboardTriggerButton)
+        trackpadContainer.addSubview(keyboardTriggerButton)
 
-        // Constraints
+        // Layout Constraints
         NSLayoutConstraint.activate([
             toolbar.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
             toolbar.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor),
@@ -94,23 +112,41 @@ class MainAppViewController: UIViewController, UITextFieldDelegate {
             airPlayToggleButton.widthAnchor.constraint(equalToConstant: 90),
             settingsButton.widthAnchor.constraint(equalToConstant: 36),
 
-            trackpadView.topAnchor.constraint(equalTo: toolbar.bottomAnchor, constant: 16),
-            trackpadView.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor, constant: 16),
-            trackpadView.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor, constant: -16),
+            // Web View Constraints
+            webView.topAnchor.constraint(equalTo: toolbar.bottomAnchor),
+            webView.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor),
+            webView.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor),
+            webView.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor),
+
+            // Touchpad Container Constraints
+            trackpadContainer.topAnchor.constraint(equalTo: toolbar.bottomAnchor),
+            trackpadContainer.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor),
+            trackpadContainer.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor),
+            trackpadContainer.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor),
+
+            trackpadView.topAnchor.constraint(equalTo: trackpadContainer.topAnchor, constant: 16),
+            trackpadView.leadingAnchor.constraint(equalTo: trackpadContainer.leadingAnchor, constant: 16),
+            trackpadView.trailingAnchor.constraint(equalTo: trackpadContainer.trailingAnchor, constant: -16),
             trackpadView.bottomAnchor.constraint(equalTo: keyboardTriggerButton.topAnchor, constant: -16),
 
             touchpadLabel.centerXAnchor.constraint(equalTo: trackpadView.centerXAnchor),
             touchpadLabel.centerYAnchor.constraint(equalTo: trackpadView.centerYAnchor),
 
-            keyboardTriggerButton.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor, constant: 16),
-            keyboardTriggerButton.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor, constant: -16),
-            keyboardTriggerButton.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -16),
+            keyboardTriggerButton.leadingAnchor.constraint(equalTo: trackpadContainer.leadingAnchor, constant: 16),
+            keyboardTriggerButton.trailingAnchor.constraint(equalTo: trackpadContainer.trailingAnchor, constant: -16),
+            keyboardTriggerButton.bottomAnchor.constraint(equalTo: trackpadContainer.bottomAnchor, constant: -16),
             keyboardTriggerButton.heightAnchor.constraint(equalToConstant: 44)
         ])
 
         setupGestures()
 
-        // Hardware connection listeners
+        // Load default start page
+        if let url = URL(string: "https://www.google.com") {
+            webView.load(URLRequest(url: url))
+            urlTextField.text = "https://www.google.com"
+        }
+
+        // Screen Connection Listeners
         NotificationCenter.default.addObserver(self, selector: #selector(screenDidConnect), name: UIScreen.didConnectNotification, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(screenDidDisconnect), name: UIScreen.didDisconnectNotification, object: nil)
     }
@@ -142,11 +178,19 @@ class MainAppViewController: UIViewController, UITextFieldDelegate {
     }
 
     @objc func goBack() {
-        DisplayController.shared.webView.goBack()
+        if isAirPlayModeActive {
+            DisplayController.shared.webView.goBack()
+        } else if webView.canGoBack {
+            webView.goBack()
+        }
     }
 
     @objc func goForward() {
-        DisplayController.shared.webView.goForward()
+        if isAirPlayModeActive {
+            DisplayController.shared.webView.goForward()
+        } else if webView.canGoForward {
+            webView.goForward()
+        }
     }
 
     @objc func toggleAirPlayMode() {
@@ -182,25 +226,47 @@ class MainAppViewController: UIViewController, UITextFieldDelegate {
         }
         
         if let url = URL(string: formattedURL) {
-            DisplayController.shared.webView.load(URLRequest(url: url))
+            if isAirPlayModeActive {
+                DisplayController.shared.webView.load(URLRequest(url: url))
+            } else {
+                webView.load(URLRequest(url: url))
+            }
         }
         return true
     }
 
-    // MARK: - External Screen & Toggle Routing
+    func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+        if !isAirPlayModeActive {
+            urlTextField.text = webView.url?.absoluteString
+        }
+    }
+
+    // MARK: - Screen Connection & Layout Switching
     @objc func screenDidConnect(_ notification: Notification) {
-        updateExternalDisplayState()
+        airPlayToggleButton.isHidden = false
     }
 
     @objc func screenDidDisconnect(_ notification: Notification) {
         isAirPlayModeActive = false
+        airPlayToggleButton.isHidden = true
         DisplayController.shared.detachExternalScreen()
     }
 
-    private func updateExternalDisplayState() {
+    private func updateLayoutForAirPlayMode() {
         if isAirPlayModeActive && UIScreen.screens.count > 1 {
+            // Switch iPad to Touchpad Mode & project browser to external display
+            webView.isHidden = true
+            trackpadContainer.isHidden = false
+            
+            // Sync current URL to external display before projecting
+            if let currentURL = webView.url {
+                DisplayController.shared.webView.load(URLRequest(url: currentURL))
+            }
             DisplayController.shared.attachToExternalScreen(UIScreen.screens[1])
         } else {
+            // Switch iPad back to Normal Browser Mode
+            webView.isHidden = false
+            trackpadContainer.isHidden = true
             DisplayController.shared.detachExternalScreen()
         }
     }
