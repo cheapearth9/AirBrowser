@@ -22,14 +22,19 @@ final class KeyCaptureView: UIView, UIKeyInput {
 
     override func resignFirstResponder() -> Bool {
         let result = super.resignFirstResponder()
+        stopRepeating()
         onResign?()
         return result
     }
 
-    // MARK: UIKeyInput (letters, numbers, space, return, backspace)
+    // MARK: UIKeyInput (letters, numbers, space, backspace)
     var hasText: Bool { true }
 
+    private var lastReturnPress = Date.distantPast
+
     func insertText(_ text: String) {
+        // Return is handled in pressesBegan below; ignore the same key arriving here a moment later.
+        if text == "\n" && Date().timeIntervalSince(lastReturnPress) < 0.2 { return }
         onText?(text)
     }
 
@@ -37,42 +42,73 @@ final class KeyCaptureView: UIView, UIKeyInput {
         onBackspace?()
     }
 
-    // MARK: Keys that don't produce text (arrows, escape, page up/down, ...)
-    override var keyCommands: [UIKeyCommand]? {
-        let inputs: [String] = [
-            UIKeyCommand.inputUpArrow, UIKeyCommand.inputDownArrow,
-            UIKeyCommand.inputLeftArrow, UIKeyCommand.inputRightArrow,
-            UIKeyCommand.inputEscape,
-            UIKeyCommand.inputPageUp, UIKeyCommand.inputPageDown,
-            UIKeyCommand.inputHome, UIKeyCommand.inputEnd,
-            "\t"
-        ]
-        return inputs.map { input in
-            let command = UIKeyCommand(input: input, modifierFlags: [], action: #selector(handleKeyCommand(_:)))
-            command.wantsPriorityOverSystemBehavior = true
-            return command
+    // MARK: Keys that don't produce text (arrows, escape, enter, tab, page up/down, ...)
+    private var repeatTimer: Timer?
+
+    private func domKey(for usage: UIKeyboardHIDUsage) -> (String, String, Int)? {
+        switch usage {
+        case .keyboardUpArrow: return ("ArrowUp", "ArrowUp", 38)
+        case .keyboardDownArrow: return ("ArrowDown", "ArrowDown", 40)
+        case .keyboardLeftArrow: return ("ArrowLeft", "ArrowLeft", 37)
+        case .keyboardRightArrow: return ("ArrowRight", "ArrowRight", 39)
+        case .keyboardEscape: return ("Escape", "Escape", 27)
+        case .keyboardReturnOrEnter, .keypadEnter: return ("Enter", "Enter", 13)
+        case .keyboardTab: return ("Tab", "Tab", 9)
+        case .keyboardPageUp: return ("PageUp", "PageUp", 33)
+        case .keyboardPageDown: return ("PageDown", "PageDown", 34)
+        case .keyboardHome: return ("Home", "Home", 36)
+        case .keyboardEnd: return ("End", "End", 35)
+        case .keyboardDeleteForward: return ("Delete", "Delete", 46)
+        default: return nil
         }
     }
 
-    @objc private func handleKeyCommand(_ command: UIKeyCommand) {
-        guard let input = command.input else { return }
+    override func pressesBegan(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+        var unhandled = Set<UIPress>()
 
-        let names: [String: (String, String, Int)] = [
-            UIKeyCommand.inputUpArrow: ("ArrowUp", "ArrowUp", 38),
-            UIKeyCommand.inputDownArrow: ("ArrowDown", "ArrowDown", 40),
-            UIKeyCommand.inputLeftArrow: ("ArrowLeft", "ArrowLeft", 37),
-            UIKeyCommand.inputRightArrow: ("ArrowRight", "ArrowRight", 39),
-            UIKeyCommand.inputEscape: ("Escape", "Escape", 27),
-            UIKeyCommand.inputPageUp: ("PageUp", "PageUp", 33),
-            UIKeyCommand.inputPageDown: ("PageDown", "PageDown", 34),
-            UIKeyCommand.inputHome: ("Home", "Home", 36),
-            UIKeyCommand.inputEnd: ("End", "End", 35),
-            "\t": ("Tab", "Tab", 9)
-        ]
-
-        if let (key, code, keyCode) = names[input] {
-            onKey?(key, code, keyCode)
+        for press in presses {
+            if let key = press.key,
+               !key.modifierFlags.contains(.command),
+               let name = domKey(for: key.keyCode) {
+                if name.0 == "Enter" { lastReturnPress = Date() }
+                onKey?(name.0, name.1, name.2)
+                startRepeating(name)
+            } else {
+                unhandled.insert(press)
+            }
         }
+
+        if !unhandled.isEmpty {
+            super.pressesBegan(unhandled, with: event)
+        }
+    }
+
+    override func pressesEnded(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+        stopRepeating()
+        super.pressesEnded(presses, with: event)
+    }
+
+    override func pressesCancelled(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+        stopRepeating()
+        super.pressesCancelled(presses, with: event)
+    }
+
+    /// Holding an arrow key or Page Up/Down keeps sending it, like a normal keyboard.
+    private func startRepeating(_ name: (String, String, Int)) {
+        stopRepeating()
+        let repeatable = ["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "PageUp", "PageDown"]
+        guard repeatable.contains(name.0) else { return }
+
+        repeatTimer = Timer.scheduledTimer(withTimeInterval: 0.4, repeats: false) { [weak self] _ in
+            self?.repeatTimer = Timer.scheduledTimer(withTimeInterval: 0.08, repeats: true) { [weak self] _ in
+                self?.onKey?(name.0, name.1, name.2)
+            }
+        }
+    }
+
+    private func stopRepeating() {
+        repeatTimer?.invalidate()
+        repeatTimer = nil
     }
 
     // MARK: Cmd+V
@@ -101,6 +137,7 @@ class MainAppViewController: UIViewController, UITextFieldDelegate, WKNavigation
     private var trackpadView: UIView!
     private var keyboardTriggerButton: UIButton!
     private var airPlayToggleButton: UIButton!
+    private var reloadButton: UIButton!
     private var keyCapture: KeyCaptureView!
 
     private var isAirPlayModeActive = false
@@ -133,6 +170,14 @@ class MainAppViewController: UIViewController, UITextFieldDelegate, WKNavigation
         urlTextField.autocapitalizationType = .none
         urlTextField.keyboardType = .webSearch
         urlTextField.delegate = self
+
+        // Refresh button inside the bar, on the right. While you type, the X (clear) button takes its place.
+        reloadButton = UIButton(type: .system)
+        reloadButton.setImage(UIImage(systemName: "arrow.clockwise"), for: .normal)
+        reloadButton.frame = CGRect(x: 0, y: 0, width: 36, height: 30)
+        reloadButton.addTarget(self, action: #selector(reloadTapped), for: .touchUpInside)
+        urlTextField.rightView = reloadButton
+        urlTextField.rightViewMode = .unlessEditing
 
         airPlayToggleButton = createButton(title: "AirPlay: OFF", action: #selector(toggleAirPlayMode))
         airPlayToggleButton.titleLabel?.font = .systemFont(ofSize: 12, weight: .bold)
@@ -179,7 +224,31 @@ class MainAppViewController: UIViewController, UITextFieldDelegate, WKNavigation
         keyboardTriggerButton.layer.borderWidth = 1
         keyboardTriggerButton.layer.borderColor = UIColor.systemBlue.cgColor
         keyboardTriggerButton.addTarget(self, action: #selector(triggerKeyboard), for: .touchUpInside)
-        trackpadContainer.addSubview(keyboardTriggerButton)
+        keyboardTriggerButton.titleLabel?.adjustsFontSizeToFitWidth = true
+        keyboardTriggerButton.titleLabel?.minimumScaleFactor = 0.7
+
+        // Bottom row: Show Keyboard takes the left half, Esc and Enter share the right half
+        let escButton = makeClickButton(title: "Esc", action: #selector(escTapped))
+        let enterButton = makeClickButton(title: "Enter", action: #selector(enterTapped))
+        let bottomRow = UIStackView(arrangedSubviews: [keyboardTriggerButton, escButton, enterButton])
+        bottomRow.axis = .horizontal
+        bottomRow.spacing = 12
+        bottomRow.distribution = .fill
+        bottomRow.translatesAutoresizingMaskIntoConstraints = false
+        trackpadContainer.addSubview(bottomRow)
+
+        // Arrow keys in the top-right corner of the touchpad (up on top, left / down / right below)
+        let upButton = makeArrowButton(symbol: "arrow.up", action: #selector(arrowUpTapped))
+        let downButton = makeArrowButton(symbol: "arrow.down", action: #selector(arrowDownTapped))
+        let leftButton = makeArrowButton(symbol: "arrow.left", action: #selector(arrowLeftTapped))
+        let rightButton = makeArrowButton(symbol: "arrow.right", action: #selector(arrowRightTapped))
+        let arrowPad = UIView()
+        arrowPad.translatesAutoresizingMaskIntoConstraints = false
+        for arrow in [upButton, downButton, leftButton, rightButton] {
+            arrow.translatesAutoresizingMaskIntoConstraints = false
+            arrowPad.addSubview(arrow)
+        }
+        trackpadView.addSubview(arrowPad)
 
         // Left / right click buttons under the touchpad, like a laptop
         let leftClickButton = makeClickButton(title: "Left Click", action: #selector(leftClickTapped))
@@ -239,17 +308,41 @@ class MainAppViewController: UIViewController, UITextFieldDelegate, WKNavigation
 
             clickStack.leadingAnchor.constraint(equalTo: trackpadContainer.leadingAnchor, constant: 16),
             clickStack.trailingAnchor.constraint(equalTo: trackpadContainer.trailingAnchor, constant: -16),
-            clickStack.bottomAnchor.constraint(equalTo: keyboardTriggerButton.topAnchor, constant: -12),
+            clickStack.bottomAnchor.constraint(equalTo: bottomRow.topAnchor, constant: -12),
             clickStack.heightAnchor.constraint(equalToConstant: 48),
 
             touchpadLabel.centerXAnchor.constraint(equalTo: trackpadView.centerXAnchor),
             touchpadLabel.centerYAnchor.constraint(equalTo: trackpadView.centerYAnchor),
 
-            keyboardTriggerButton.leadingAnchor.constraint(equalTo: trackpadContainer.leadingAnchor, constant: 16),
-            keyboardTriggerButton.trailingAnchor.constraint(equalTo: trackpadContainer.trailingAnchor, constant: -16),
-            keyboardTriggerButton.bottomAnchor.constraint(equalTo: trackpadContainer.bottomAnchor, constant: -16),
-            keyboardTriggerButton.heightAnchor.constraint(equalToConstant: 44)
+            // Bottom row: keyboard button is twice as wide as Esc, and Esc as wide as Enter
+            bottomRow.leadingAnchor.constraint(equalTo: trackpadContainer.leadingAnchor, constant: 16),
+            bottomRow.trailingAnchor.constraint(equalTo: trackpadContainer.trailingAnchor, constant: -16),
+            bottomRow.bottomAnchor.constraint(equalTo: trackpadContainer.bottomAnchor, constant: -16),
+            bottomRow.heightAnchor.constraint(equalToConstant: 44),
+            escButton.widthAnchor.constraint(equalTo: enterButton.widthAnchor),
+            keyboardTriggerButton.widthAnchor.constraint(equalTo: escButton.widthAnchor, multiplier: 2),
+
+            // Arrow keys, top-right corner of the touchpad
+            arrowPad.topAnchor.constraint(equalTo: trackpadView.topAnchor, constant: 10),
+            arrowPad.trailingAnchor.constraint(equalTo: trackpadView.trailingAnchor, constant: -10),
+            arrowPad.widthAnchor.constraint(equalToConstant: 116),
+            arrowPad.heightAnchor.constraint(equalToConstant: 76),
+            upButton.topAnchor.constraint(equalTo: arrowPad.topAnchor),
+            upButton.centerXAnchor.constraint(equalTo: downButton.centerXAnchor),
+            leftButton.leadingAnchor.constraint(equalTo: arrowPad.leadingAnchor),
+            leftButton.bottomAnchor.constraint(equalTo: arrowPad.bottomAnchor),
+            downButton.leadingAnchor.constraint(equalTo: leftButton.trailingAnchor, constant: 4),
+            downButton.bottomAnchor.constraint(equalTo: arrowPad.bottomAnchor),
+            rightButton.leadingAnchor.constraint(equalTo: downButton.trailingAnchor, constant: 4),
+            rightButton.bottomAnchor.constraint(equalTo: arrowPad.bottomAnchor)
         ])
+
+        for arrow in [upButton, downButton, leftButton, rightButton] {
+            NSLayoutConstraint.activate([
+                arrow.widthAnchor.constraint(equalToConstant: 36),
+                arrow.heightAnchor.constraint(equalToConstant: 36)
+            ])
+        }
 
         setupGestures()
 
@@ -358,6 +451,41 @@ class MainAppViewController: UIViewController, UITextFieldDelegate, WKNavigation
         return button
     }
 
+    private func makeArrowButton(symbol: String, action: Selector) -> UIButton {
+        let button = UIButton(type: .system)
+        button.setImage(UIImage(systemName: symbol), for: .normal)
+        button.backgroundColor = .systemBackground
+        button.layer.cornerRadius = 8
+        button.layer.borderWidth = 1
+        button.layer.borderColor = UIColor.separator.cgColor
+        button.addTarget(self, action: action, for: .touchUpInside)
+        return button
+    }
+
+    // Keys sent to the page on the monitor (for YouTube TV and any page that uses the keyboard)
+    @objc private func arrowUpTapped() { DisplayController.shared.pressKey("ArrowUp", code: "ArrowUp", keyCode: 38) }
+    @objc private func arrowDownTapped() { DisplayController.shared.pressKey("ArrowDown", code: "ArrowDown", keyCode: 40) }
+    @objc private func arrowLeftTapped() { DisplayController.shared.pressKey("ArrowLeft", code: "ArrowLeft", keyCode: 37) }
+    @objc private func arrowRightTapped() { DisplayController.shared.pressKey("ArrowRight", code: "ArrowRight", keyCode: 39) }
+    @objc private func escTapped() { DisplayController.shared.pressKey("Escape", code: "Escape", keyCode: 27) }
+    @objc private func enterTapped() { DisplayController.shared.pressKey("Enter", code: "Enter", keyCode: 13) }
+
+    // MARK: - Reload / stop (the button inside the URL bar)
+
+    @objc private func reloadTapped() {
+        if webView.isLoading {
+            webView.stopLoading()
+        } else {
+            webView.reload()
+        }
+        updateReloadButton()
+    }
+
+    private func updateReloadButton() {
+        let name = webView.isLoading ? "xmark" : "arrow.clockwise"
+        reloadButton.setImage(UIImage(systemName: name), for: .normal)
+    }
+
     @objc private func leftClickTapped() {
         DisplayController.shared.performClickAtCursor()
     }
@@ -402,7 +530,24 @@ class MainAppViewController: UIViewController, UITextFieldDelegate, WKNavigation
                 self?.webView.reload()
                 DispatchQueue.main.async { self?.focusCaptureIfNeeded() }
             })
+            alert.addAction(UIAlertAction(
+                title: "YouTube TV quality: " + YouTubeTV.currentQuality.name + " (tap to change)",
+                style: .default
+            ) { [weak self] _ in
+                YouTubeTV.nextQuality()
+                let quality = YouTubeTV.currentQuality
+                self?.showToast("YouTube TV quality: " + quality.name)
+                // The page reads this setting when it starts, so store it there, then reload.
+                let script = "try { localStorage.setItem('" + YouTubeTV.pageQualityKey + "', '" + String(quality.height) + "'); } catch (e) {}"
+                self?.webView.evaluateJavaScript(script) { _, _ in
+                    self?.webView.reload()
+                }
+                DispatchQueue.main.async { self?.focusCaptureIfNeeded() }
+            })
         }
+        alert.addAction(UIAlertAction(title: "Backup & Restore", style: .default) { [weak self] _ in
+            self?.showBackupMenu()
+        })
         alert.addAction(UIAlertAction(title: "Clear Cache & Cookies", style: .destructive) { [weak self] _ in
             WKWebsiteDataStore.default().removeData(ofTypes: WKWebsiteDataStore.allWebsiteDataTypes(), modifiedSince: Date(timeIntervalSince1970: 0)) {}
             DispatchQueue.main.async { self?.focusCaptureIfNeeded() }
@@ -414,6 +559,26 @@ class MainAppViewController: UIViewController, UITextFieldDelegate, WKNavigation
     }
 
     // MARK: - History, downloads and notices
+
+    private func showBackupMenu() {
+        let alert = UIAlertController(
+            title: "Backup & Restore",
+            message: "Saves your logins (Google, YouTube...), history and settings to a file in the Files app. Restore it after reinstalling. Keep the file private: it can sign in as you. Downloads are not included.",
+            preferredStyle: .alert
+        )
+        alert.addAction(UIAlertAction(title: "Back Up to Files", style: .default) { [weak self] _ in
+            guard let self = self else { return }
+            BackupManager.shared.exportBackup(from: self)
+        })
+        alert.addAction(UIAlertAction(title: "Restore from File", style: .default) { [weak self] _ in
+            guard let self = self else { return }
+            BackupManager.shared.importBackup(from: self)
+        })
+        alert.addAction(UIAlertAction(title: "Cancel", style: .cancel) { [weak self] _ in
+            DispatchQueue.main.async { self?.focusCaptureIfNeeded() }
+        })
+        present(alert, animated: true)
+    }
 
     private func showHistory() {
         let controller = HistoryViewController()
@@ -568,6 +733,24 @@ class MainAppViewController: UIViewController, UITextFieldDelegate, WKNavigation
         if let urlString = webView.url?.absoluteString {
             urlTextField.text = urlString
         }
+        updateReloadButton()
+    }
+
+    func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
+        updateReloadButton()
+    }
+
+    func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
+        updateReloadButton()
+    }
+
+    func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
+        updateReloadButton()
+    }
+
+    /// If the page's process crashes (the page goes blank), reload it instead of leaving it dead.
+    func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
+        webView.reload()
     }
 
     // MARK: - AirPlay mode
