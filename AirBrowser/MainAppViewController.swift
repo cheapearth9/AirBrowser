@@ -128,6 +128,10 @@ class MainAppViewController: UIViewController, UITextFieldDelegate, WKNavigation
         urlTextField.placeholder = "Enter URL or search..."
         urlTextField.font = .systemFont(ofSize: 14)
         urlTextField.returnKeyType = .go
+        urlTextField.clearButtonMode = .whileEditing
+        urlTextField.autocorrectionType = .no
+        urlTextField.autocapitalizationType = .none
+        urlTextField.keyboardType = .webSearch
         urlTextField.delegate = self
 
         airPlayToggleButton = createButton(title: "AirPlay: OFF", action: #selector(toggleAirPlayMode))
@@ -262,6 +266,12 @@ class MainAppViewController: UIViewController, UITextFieldDelegate, WKNavigation
             name: UIApplication.didBecomeActiveNotification,
             object: nil
         )
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(downloadMessage(_:)),
+            name: DownloadManager.message,
+            object: nil
+        )
     }
 
     override func viewDidAppear(_ animated: Bool) {
@@ -331,12 +341,89 @@ class MainAppViewController: UIViewController, UITextFieldDelegate, WKNavigation
     }
 
     @objc func openSettings() {
-        let alert = UIAlertController(title: "Browser Settings", message: "Manage browsing data", preferredStyle: .alert)
-        alert.addAction(UIAlertAction(title: "Clear Cache & Cookies", style: .destructive) { _ in
-            WKWebsiteDataStore.default().removeData(ofTypes: WKWebsiteDataStore.allWebsiteDataTypes(), modifiedSince: Date(timeIntervalSince1970: 0)) {}
+        let alert = UIAlertController(title: "Browser Settings", message: nil, preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: "History", style: .default) { [weak self] _ in
+            self?.showHistory()
         })
-        alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
+        alert.addAction(UIAlertAction(title: "Downloads", style: .default) { [weak self] _ in
+            self?.showDownloads()
+        })
+        alert.addAction(UIAlertAction(title: "Clear Cache & Cookies", style: .destructive) { [weak self] _ in
+            WKWebsiteDataStore.default().removeData(ofTypes: WKWebsiteDataStore.allWebsiteDataTypes(), modifiedSince: Date(timeIntervalSince1970: 0)) {}
+            DispatchQueue.main.async { self?.focusCaptureIfNeeded() }
+        })
+        alert.addAction(UIAlertAction(title: "Cancel", style: .cancel) { [weak self] _ in
+            DispatchQueue.main.async { self?.focusCaptureIfNeeded() }
+        })
         present(alert, animated: true)
+    }
+
+    // MARK: - History, downloads and notices
+
+    private func showHistory() {
+        let controller = HistoryViewController()
+        controller.onSelect = { [weak self] url in
+            self?.webView.load(URLRequest(url: url))
+        }
+        presentLibrary(controller)
+    }
+
+    private func showDownloads() {
+        presentLibrary(DownloadsViewController())
+    }
+
+    private func presentLibrary(_ controller: LibraryViewController) {
+        controller.onClose = { [weak self] in
+            self?.focusCaptureIfNeeded()
+        }
+        let navigation = UINavigationController(rootViewController: controller)
+        navigation.modalPresentationStyle = .formSheet
+        present(navigation, animated: true)
+    }
+
+    @objc private func downloadMessage(_ notification: Notification) {
+        if let text = notification.userInfo?["text"] as? String {
+            showToast(text)
+        }
+    }
+
+    /// Small pill at the bottom of the iPad screen that fades away by itself.
+    private func showToast(_ text: String) {
+        let label = UILabel()
+        label.translatesAutoresizingMaskIntoConstraints = false
+        label.text = text
+        label.textColor = .white
+        label.font = .systemFont(ofSize: 14, weight: .medium)
+        label.numberOfLines = 2
+        label.textAlignment = .center
+
+        let pill = UIView()
+        pill.translatesAutoresizingMaskIntoConstraints = false
+        pill.backgroundColor = UIColor.black.withAlphaComponent(0.85)
+        pill.layer.cornerRadius = 14
+        pill.alpha = 0
+        pill.addSubview(label)
+        view.addSubview(pill)
+
+        NSLayoutConstraint.activate([
+            label.topAnchor.constraint(equalTo: pill.topAnchor, constant: 10),
+            label.bottomAnchor.constraint(equalTo: pill.bottomAnchor, constant: -10),
+            label.leadingAnchor.constraint(equalTo: pill.leadingAnchor, constant: 16),
+            label.trailingAnchor.constraint(equalTo: pill.trailingAnchor, constant: -16),
+            pill.centerXAnchor.constraint(equalTo: view.centerXAnchor),
+            pill.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -90),
+            pill.widthAnchor.constraint(lessThanOrEqualTo: view.widthAnchor, constant: -48)
+        ])
+
+        UIView.animate(withDuration: 0.2, animations: {
+            pill.alpha = 1
+        }, completion: { _ in
+            UIView.animate(withDuration: 0.3, delay: 2.5, options: [], animations: {
+                pill.alpha = 0
+            }, completion: { _ in
+                pill.removeFromSuperview()
+            })
+        })
     }
 
     func textFieldShouldReturn(_ textField: UITextField) -> Bool {
@@ -359,9 +446,47 @@ class MainAppViewController: UIViewController, UITextFieldDelegate, WKNavigation
         return true
     }
 
+    func textFieldDidBeginEditing(_ textField: UITextField) {
+        // Like Safari: tapping the bar selects the whole address, so typing replaces it.
+        DispatchQueue.main.async {
+            textField.selectAll(nil)
+        }
+    }
+
     func textFieldDidEndEditing(_ textField: UITextField) {
         // Back to typing into the page on the monitor.
         focusCaptureIfNeeded()
+    }
+
+    // MARK: - Downloads (links that are files, or pages the server marks as attachments)
+
+    func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction, decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
+        if navigationAction.shouldPerformDownload {
+            decisionHandler(.download)
+        } else {
+            decisionHandler(.allow)
+        }
+    }
+
+    func webView(_ webView: WKWebView, decidePolicyFor navigationResponse: WKNavigationResponse, decisionHandler: @escaping (WKNavigationResponsePolicy) -> Void) {
+        let disposition = (navigationResponse.response as? HTTPURLResponse)?
+            .value(forHTTPHeaderField: "Content-Disposition")?
+            .lowercased() ?? ""
+        let isAttachment = disposition.hasPrefix("attachment")
+
+        if navigationResponse.isForMainFrame && (isAttachment || !navigationResponse.canShowMIMEType) {
+            decisionHandler(.download)
+        } else {
+            decisionHandler(.allow)
+        }
+    }
+
+    func webView(_ webView: WKWebView, navigationAction: WKNavigationAction, didBecome download: WKDownload) {
+        DownloadManager.shared.adopt(download)
+    }
+
+    func webView(_ webView: WKWebView, navigationResponse: WKNavigationResponse, didBecome download: WKDownload) {
+        DownloadManager.shared.adopt(download)
     }
 
     // MARK: - WKNavigationDelegate (keeps the URL bar in sync, including swipes and back/forward)
@@ -443,7 +568,7 @@ class MainAppViewController: UIViewController, UITextFieldDelegate, WKNavigation
     }
 
     private func focusCaptureIfNeeded() {
-        guard isAirPlayModeActive, view.window != nil, !urlTextField.isFirstResponder else { return }
+        guard isAirPlayModeActive, view.window != nil, presentedViewController == nil, !urlTextField.isFirstResponder else { return }
         if !keyCapture.isFirstResponder {
             _ = keyCapture.becomeFirstResponder()
         }
