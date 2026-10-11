@@ -1,6 +1,25 @@
 import UIKit
 import WebKit
 
+/// The iPad's main window.
+/// While AirPlay mode is ON the iPad pointer is locked and a physical mouse drives the monitor.
+/// The system still delivers the mouse's clicks to whatever iPad button sits under the hidden pointer,
+/// so while `ignoresMouseClicks` is true those clicks are dropped. Finger touches are not affected.
+final class MainWindow: UIWindow {
+    var ignoresMouseClicks = false
+
+    override func sendEvent(_ event: UIEvent) {
+        if ignoresMouseClicks,
+           event.type == .touches,
+           let touches = event.allTouches,
+           !touches.isEmpty,
+           touches.allSatisfy({ $0.type == .indirectPointer }) {
+            return
+        }
+        super.sendEvent(event)
+    }
+}
+
 class SceneDelegate: UIResponder, UIWindowSceneDelegate {
     var window: UIWindow?
 
@@ -9,7 +28,7 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
 
         if session.role == .windowApplication {
             // Main iPad screen: browser UI with the touchpad & keyboard controls.
-            let mainWindow = UIWindow(windowScene: windowScene)
+            let mainWindow = MainWindow(windowScene: windowScene)
             mainWindow.rootViewController = MainAppViewController()
             mainWindow.makeKeyAndVisible()
             self.window = mainWindow
