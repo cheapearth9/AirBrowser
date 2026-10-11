@@ -61,6 +61,19 @@ final class HistoryStore {
         save()
     }
 
+    /// Adds entries from a backup, skipping ones that are already here.
+    func merge(_ imported: [HistoryEntry]) {
+        let known = Set(entries.map { $0.id })
+        let additions = imported.filter { !known.contains($0.id) }
+        guard !additions.isEmpty else { return }
+
+        entries = (entries + additions).sorted { $0.date > $1.date }
+        if entries.count > maxEntries {
+            entries.removeLast(entries.count - maxEntries)
+        }
+        save()
+    }
+
     private func save() {
         if let data = try? JSONEncoder().encode(entries) {
             UserDefaults.standard.set(data, forKey: storageKey)
