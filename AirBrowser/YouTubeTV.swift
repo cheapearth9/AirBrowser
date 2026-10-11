@@ -13,12 +13,12 @@ enum YouTubeTV {
     /// Different TVs YouTube may accept. If one stops working, Settings can switch to the next.
     static let profiles: [Profile] = [
         Profile(
-            name: "Samsung TV",
-            userAgent: "Mozilla/5.0 (SMART-TV; Linux; Tizen 6.0) AppleWebKit/537.36 (KHTML, like Gecko) 76.0.3809.146/6.0 TV Safari/537.36"
-        ),
-        Profile(
             name: "Xbox Series X",
             userAgent: "Mozilla/5.0 (Windows NT 10.0; Xbox; Xbox Series X) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36 Edg/114.0.0.0"
+        ),
+        Profile(
+            name: "Samsung TV",
+            userAgent: "Mozilla/5.0 (SMART-TV; Linux; Tizen 6.0) AppleWebKit/537.36 (KHTML, like Gecko) 76.0.3809.146/6.0 TV Safari/537.36"
         ),
         Profile(
             name: "Samsung TV (older)",
@@ -145,6 +145,60 @@ enum YouTubeTV {
   if (location.pathname !== '/tv' && location.pathname.indexOf('/tv/') !== 0) { return; }
   if (window.__abTVLayout) { return; }
   window.__abTVLayout = true;
+
+  // 0. YouTube's TV app has feature switches. On TVs it thinks are weak it turns on a flat "lightweight"
+  //    look (solid boxes instead of see-through ones) and lower video quality. Force the full-featured set.
+  var forcedFlags = {
+    enableAnimations: true,
+    enableListAnimations: true,
+    enableRoundedProgressBar: true,
+    enableLiveChat: true,
+    isLimitedMemory: false,
+    enableLightweightTimely: false
+  };
+
+  function lockFlags(switches) {
+    Object.keys(forcedFlags).forEach(function (name) {
+      try {
+        Object.defineProperty(switches, name, {
+          get: function () { return forcedFlags[name]; },
+          set: function () {},
+          configurable: true,
+          enumerable: true
+        });
+      } catch (e) {}
+    });
+  }
+
+  function patchConfig(config) {
+    if (!config || typeof config !== 'object') { return config; }
+    var current = config.featureSwitches;
+    if (!current || typeof current !== 'object') { current = {}; }
+    lockFlags(current);
+    try {
+      Object.defineProperty(config, 'featureSwitches', {
+        get: function () { return current; },
+        set: function (value) {
+          current = (value && typeof value === 'object') ? value : {};
+          lockFlags(current);
+        },
+        configurable: true,
+        enumerable: true
+      });
+    } catch (e) {}
+    return config;
+  }
+
+  // The page creates window.tectonicConfig itself, so watch for it being assigned and patch it then.
+  var holder = patchConfig(window.tectonicConfig || {});
+  try {
+    Object.defineProperty(window, 'tectonicConfig', {
+      get: function () { return holder; },
+      set: function (value) { holder = patchConfig(value); },
+      configurable: true,
+      enumerable: true
+    });
+  } catch (e) {}
 
   // 1. The page must never scroll: scrolling slid the picture and showed black bars.
   var style = document.createElement('style');
