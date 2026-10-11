@@ -181,6 +181,16 @@ class MainAppViewController: UIViewController, UITextFieldDelegate, WKNavigation
         keyboardTriggerButton.addTarget(self, action: #selector(triggerKeyboard), for: .touchUpInside)
         trackpadContainer.addSubview(keyboardTriggerButton)
 
+        // Left / right click buttons under the touchpad, like a laptop
+        let leftClickButton = makeClickButton(title: "Left Click", action: #selector(leftClickTapped))
+        let rightClickButton = makeClickButton(title: "Right Click", action: #selector(rightClickTapped))
+        let clickStack = UIStackView(arrangedSubviews: [leftClickButton, rightClickButton])
+        clickStack.axis = .horizontal
+        clickStack.spacing = 12
+        clickStack.distribution = .fillEqually
+        clickStack.translatesAutoresizingMaskIntoConstraints = false
+        trackpadContainer.addSubview(clickStack)
+
         // 3. Invisible view that receives typing and forwards it to the page on the monitor
         keyCapture = KeyCaptureView(frame: CGRect(x: 0, y: 0, width: 1, height: 1))
         keyCapture.alpha = 0.01
@@ -225,7 +235,12 @@ class MainAppViewController: UIViewController, UITextFieldDelegate, WKNavigation
             trackpadView.topAnchor.constraint(equalTo: trackpadContainer.topAnchor, constant: 16),
             trackpadView.leadingAnchor.constraint(equalTo: trackpadContainer.leadingAnchor, constant: 16),
             trackpadView.trailingAnchor.constraint(equalTo: trackpadContainer.trailingAnchor, constant: -16),
-            trackpadView.bottomAnchor.constraint(equalTo: keyboardTriggerButton.topAnchor, constant: -16),
+            trackpadView.bottomAnchor.constraint(equalTo: clickStack.topAnchor, constant: -12),
+
+            clickStack.leadingAnchor.constraint(equalTo: trackpadContainer.leadingAnchor, constant: 16),
+            clickStack.trailingAnchor.constraint(equalTo: trackpadContainer.trailingAnchor, constant: -16),
+            clickStack.bottomAnchor.constraint(equalTo: keyboardTriggerButton.topAnchor, constant: -12),
+            clickStack.heightAnchor.constraint(equalToConstant: 48),
 
             touchpadLabel.centerXAnchor.constraint(equalTo: trackpadView.centerXAnchor),
             touchpadLabel.centerYAnchor.constraint(equalTo: trackpadView.centerYAnchor),
@@ -331,6 +346,26 @@ class MainAppViewController: UIViewController, UITextFieldDelegate, WKNavigation
         DisplayController.shared.performClickAtCursor()
     }
 
+    private func makeClickButton(title: String, action: Selector) -> UIButton {
+        let button = UIButton(type: .system)
+        button.setTitle(title, for: .normal)
+        button.titleLabel?.font = .systemFont(ofSize: 16, weight: .semibold)
+        button.backgroundColor = .secondarySystemBackground
+        button.layer.cornerRadius = 8
+        button.layer.borderWidth = 1
+        button.layer.borderColor = UIColor.separator.cgColor
+        button.addTarget(self, action: action, for: .touchUpInside)
+        return button
+    }
+
+    @objc private func leftClickTapped() {
+        DisplayController.shared.performClickAtCursor()
+    }
+
+    @objc private func rightClickTapped() {
+        DisplayController.shared.performClickAtCursor(button: 2)
+    }
+
     // MARK: - Navigation
 
     @objc func goBack() {
@@ -349,6 +384,25 @@ class MainAppViewController: UIViewController, UITextFieldDelegate, WKNavigation
         alert.addAction(UIAlertAction(title: "Downloads", style: .default) { [weak self] _ in
             self?.showDownloads()
         })
+        alert.addAction(UIAlertAction(
+            title: DisplayController.shared.prefersDesktopSite ? "Request Mobile Site" : "Request Desktop Site",
+            style: .default
+        ) { [weak self] _ in
+            DisplayController.shared.prefersDesktopSite.toggle()
+            self?.webView.reload()
+            DispatchQueue.main.async { self?.focusCaptureIfNeeded() }
+        })
+        if YouTubeTV.isTVAddress(webView.url) {
+            alert.addAction(UIAlertAction(
+                title: "YouTube TV profile: " + YouTubeTV.currentProfile.name + " (tap to switch)",
+                style: .default
+            ) { [weak self] _ in
+                YouTubeTV.nextProfile()
+                self?.showToast("YouTube TV profile: " + YouTubeTV.currentProfile.name)
+                self?.webView.reload()
+                DispatchQueue.main.async { self?.focusCaptureIfNeeded() }
+            })
+        }
         alert.addAction(UIAlertAction(title: "Clear Cache & Cookies", style: .destructive) { [weak self] _ in
             WKWebsiteDataStore.default().removeData(ofTypes: WKWebsiteDataStore.allWebsiteDataTypes(), modifiedSince: Date(timeIntervalSince1970: 0)) {}
             DispatchQueue.main.async { self?.focusCaptureIfNeeded() }
@@ -461,12 +515,25 @@ class MainAppViewController: UIViewController, UITextFieldDelegate, WKNavigation
 
     // MARK: - Downloads (links that are files, or pages the server marks as attachments)
 
-    func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction, decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
+    func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction, preferences: WKWebpagePreferences, decisionHandler: @escaping (WKNavigationActionPolicy, WKWebpagePreferences) -> Void) {
         if navigationAction.shouldPerformDownload {
-            decisionHandler(.download)
-        } else {
-            decisionHandler(.allow)
+            decisionHandler(.download, preferences)
+            return
         }
+
+        // Desktop / mobile / YouTube TV: if the browser has to change its identity for this address
+        // (for example when opening youtube.com/tv), load it again so the new identity is really sent.
+        let isMainFrame = navigationAction.targetFrame?.isMainFrame ?? true
+        if isMainFrame, DisplayController.shared.prepareIdentity(for: navigationAction.request, preferences: preferences) {
+            let request = navigationAction.request
+            decisionHandler(.cancel, preferences)
+            DispatchQueue.main.async {
+                webView.load(request)
+            }
+            return
+        }
+
+        decisionHandler(.allow, preferences)
     }
 
     func webView(_ webView: WKWebView, decidePolicyFor navigationResponse: WKNavigationResponse, decisionHandler: @escaping (WKNavigationResponsePolicy) -> Void) {
