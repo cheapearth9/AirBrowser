@@ -46,6 +46,44 @@ enum YouTubeTV {
         profileIndex = (profileIndex + 1) % profiles.count
     }
 
+    // MARK: Quality (1080p / 1440p / 4K)
+
+    struct Quality {
+        let name: String
+        /// Pretend display height in pixels. 0 = Auto (change nothing).
+        let height: Int
+    }
+
+    static let qualities: [Quality] = [
+        Quality(name: "Auto", height: 0),
+        Quality(name: "1080p", height: 1080),
+        Quality(name: "1440p", height: 1440),
+        Quality(name: "4K", height: 2160)
+    ]
+
+    private static let qualityKey = "AirBrowser.youtubeTVQuality"
+
+    /// Name of the setting the page reads (stored in the page's own localStorage).
+    static let pageQualityKey = "__ab_tv_res"
+
+    static var qualityIndex: Int {
+        get {
+            let saved = UserDefaults.standard.integer(forKey: qualityKey)
+            return min(max(saved, 0), qualities.count - 1)
+        }
+        set {
+            UserDefaults.standard.set(newValue, forKey: qualityKey)
+        }
+    }
+
+    static var currentQuality: Quality {
+        return qualities[qualityIndex]
+    }
+
+    static func nextQuality() {
+        qualityIndex = (qualityIndex + 1) % qualities.count
+    }
+
     /// True for youtube.com/tv (including youtube.com/tv#/watch?v=...).
     static func isTVAddress(_ url: URL?) -> Bool {
         guard let url = url, let host = url.host?.lowercased() else { return false }
@@ -95,6 +133,42 @@ enum YouTubeTV {
     Response.prototype.json = function () {
       return originalJson.apply(this, arguments).then(clean);
     };
+  }
+})();
+"""#
+
+    /// Makes the TV page fill the screen and stay put, and (if chosen in Settings) makes it report a
+    /// bigger display so YouTube offers higher video quality. Runs only on youtube.com/tv.
+    static let layoutScript = #"""
+(function () {
+  if (location.hostname.indexOf('youtube.com') === -1) { return; }
+  if (location.pathname !== '/tv' && location.pathname.indexOf('/tv/') !== 0) { return; }
+  if (window.__abTVLayout) { return; }
+  window.__abTVLayout = true;
+
+  // 1. The page must never scroll: scrolling slid the picture and showed black bars.
+  var style = document.createElement('style');
+  style.textContent = 'html, body { margin: 0 !important; padding: 0 !important; width: 100% !important; ' +
+    'height: 100% !important; overflow: hidden !important; overscroll-behavior: none !important; ' +
+    'background: #000 !important; }';
+  (document.head || document.documentElement).appendChild(style);
+
+  // 2. Report a bigger display when 1080p / 1440p / 4K is chosen in Settings.
+  var target = 0;
+  try { target = parseInt(localStorage.getItem('__ab_tv_res') || '0', 10) || 0; } catch (e) {}
+  if (target > 0) {
+    var viewHeight = window.innerHeight || 1080;
+    var ratio = target / viewHeight;
+    var wide = Math.round(target * 16 / 9);
+    try {
+      Object.defineProperty(window, 'devicePixelRatio', { get: function () { return ratio; }, configurable: true });
+    } catch (e) {}
+    ['width', 'availWidth'].forEach(function (name) {
+      try { Object.defineProperty(window.screen, name, { get: function () { return wide; }, configurable: true }); } catch (e) {}
+    });
+    ['height', 'availHeight'].forEach(function (name) {
+      try { Object.defineProperty(window.screen, name, { get: function () { return target; }, configurable: true }); } catch (e) {}
+    });
   }
 })();
 """#
