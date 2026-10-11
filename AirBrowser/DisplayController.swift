@@ -19,8 +19,9 @@ private let mouseScrollMinStep: CGFloat = 6.0
 private let mouseScrollMaxStep: CGFloat = 300.0
 /// GCMouse reports "up" as positive. If the cursor moves vertically backwards, change -1.0 to 1.0.
 private let mouseVerticalSign: CGFloat = -1.0
-/// Wheel down scrolls the page down. If you want the opposite, change 1.0 to -1.0.
-private let mouseScrollSign: CGFloat = 1.0
+/// Windows-style: rolling the wheel toward you scrolls the page down.
+/// For the macOS-style opposite, change -1.0 to 1.0.
+private let mouseScrollSign: CGFloat = -1.0
 
 /// Turns one raw wheel value into a number of pixels to scroll.
 private func mouseScrollStep(_ value: Float) -> CGFloat {
