@@ -11,12 +11,23 @@ extension Notification.Name {
 // MARK: - Tunables (change these if a physical mouse feels off)
 /// Pointer speed for a physical mouse / trackpad.
 private let mouseSpeed: CGFloat = 2.0
-/// Wheel / two-finger-scroll speed for a physical mouse / trackpad.
-private let mouseScrollSpeed: CGFloat = 12.0
+/// Pixels scrolled per unit of wheel movement.
+private let mouseScrollSpeed: CGFloat = 30.0
+/// Every wheel event scrolls at least this many pixels, so slow wheel clicks are not lost.
+private let mouseScrollMinStep: CGFloat = 6.0
+/// ...and at most this many, so a fast spin does not fling the page.
+private let mouseScrollMaxStep: CGFloat = 300.0
 /// GCMouse reports "up" as positive. If the cursor moves vertically backwards, change -1.0 to 1.0.
 private let mouseVerticalSign: CGFloat = -1.0
-/// If the mouse wheel scrolls the page the wrong way, change -1.0 to 1.0.
-private let mouseScrollSign: CGFloat = -1.0
+/// Wheel down scrolls the page down. If you want the opposite, change 1.0 to -1.0.
+private let mouseScrollSign: CGFloat = 1.0
+
+/// Turns one raw wheel value into a number of pixels to scroll.
+private func mouseScrollStep(_ value: Float) -> CGFloat {
+    if value == 0 { return 0 }
+    let size = min(max(abs(CGFloat(value)) * mouseScrollSpeed, mouseScrollMinStep), mouseScrollMaxStep)
+    return (value < 0 ? -size : size) * mouseScrollSign
+}
 
 // MARK: - JavaScript helper injected into every page (types text / keys into whatever is focused)
 private let keyBridgeScript = #"""
@@ -201,6 +212,8 @@ final class DisplayController: ObservableObject {
 
     private weak var externalScene: UIWindowScene?
     private var mouseObserver: NSObjectProtocol?
+    private var urlObservation: NSKeyValueObservation?
+    private var titleObservation: NSKeyValueObservation?
 
     private init() {
         let config = WKWebViewConfiguration()
@@ -230,6 +243,15 @@ final class DisplayController: ObservableObject {
             name: UIScreen.didDisconnectNotification,
             object: nil
         )
+
+        // History: watch the address and title instead of only page loads, so pages that change
+        // without a full load (YouTube videos, for example) are recorded too.
+        urlObservation = web.observe(\.url, options: [.new]) { webView, _ in
+            HistoryStore.shared.record(url: webView.url, title: nil)
+        }
+        titleObservation = web.observe(\.title, options: [.new]) { webView, _ in
+            HistoryStore.shared.record(url: webView.url, title: webView.title)
+        }
     }
 
     private static func makeCursorView() -> UIView {
@@ -460,12 +482,13 @@ final class DisplayController: ObservableObject {
                 DispatchQueue.main.async { self?.performClickAtCursor(button: 2) }
             }
         }
-        input.scroll.valueChangedHandler = { [weak self] _, x, y in
+        input.scroll.valueChangedHandler = { [weak self] _, vertical, horizontal in
+            // iPadOS reports the VERTICAL wheel in the first value and the HORIZONTAL one in the second
+            // (negative = wheel up / left, positive = wheel down / right).
+            let deltaY = mouseScrollStep(vertical)
+            let deltaX = mouseScrollStep(horizontal)
             DispatchQueue.main.async {
-                self?.scroll(
-                    deltaX: CGFloat(x) * mouseScrollSpeed * mouseScrollSign,
-                    deltaY: CGFloat(y) * mouseScrollSpeed * mouseScrollSign
-                )
+                self?.scroll(deltaX: deltaX, deltaY: deltaY)
             }
         }
     }
