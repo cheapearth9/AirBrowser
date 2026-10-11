@@ -135,6 +135,73 @@ private let keyBridgeScript = #"""
   }
 
   window.__ab = {
+    contextMenu: function (x, y) {
+      var old = document.getElementById('__ab_menu');
+      if (old) { old.remove(); }
+
+      var el = document.elementFromPoint(x, y);
+      if (!el) { return; }
+
+      var ev = new MouseEvent('contextmenu', { bubbles: true, cancelable: true, view: window, clientX: x, clientY: y, button: 2 });
+      if (!el.dispatchEvent(ev)) { return; } // the page showed its own menu (YouTube's player does)
+
+      function post(type, text) {
+        try { window.webkit.messageHandlers.airbrowser.postMessage({ type: type, text: text }); } catch (e) {}
+      }
+
+      var link = el.closest ? el.closest('a[href]') : null;
+      var image = el.closest ? el.closest('img') : null;
+      var selected = '';
+      try { selected = String(window.getSelection()); } catch (e) {}
+
+      var items = [];
+      if (link) {
+        items.push(['Open Link', function () { window.location.href = link.href; }]);
+        items.push(['Copy Link', function () { post('copy', link.href); }]);
+      }
+      if (image && (image.currentSrc || image.src)) {
+        var source = image.currentSrc || image.src;
+        items.push(['Open Image', function () { window.location.href = source; }]);
+        items.push(['Copy Image Address', function () { post('copy', source); }]);
+      }
+      if (selected) {
+        items.push(['Copy', function () { post('copy', selected); }]);
+      }
+      items.push(['Back', function () { history.back(); }]);
+      items.push(['Forward', function () { history.forward(); }]);
+      items.push(['Reload', function () { location.reload(); }]);
+
+      var menu = document.createElement('div');
+      menu.id = '__ab_menu';
+      menu.style.cssText = 'position:fixed;z-index:2147483647;min-width:190px;padding:6px 0;border-radius:10px;' +
+        'background:rgba(40,40,44,0.97);color:#fff;font:15px -apple-system,Helvetica,Arial,sans-serif;' +
+        'box-shadow:0 8px 30px rgba(0,0,0,0.5);';
+
+      function close() {
+        menu.remove();
+        document.removeEventListener('mousedown', outside, true);
+        document.removeEventListener('keydown', onKey, true);
+      }
+      function outside(e) { if (!menu.contains(e.target)) { close(); } }
+      function onKey(e) { if (e.key === 'Escape') { close(); } }
+
+      items.forEach(function (item) {
+        var row = document.createElement('div');
+        row.textContent = item[0];
+        row.style.cssText = 'padding:9px 18px;white-space:nowrap;';
+        row.addEventListener('click', function (e) { e.stopPropagation(); close(); item[1](); });
+        menu.appendChild(row);
+      });
+
+      (document.body || document.documentElement).appendChild(menu);
+      var width = menu.offsetWidth, height = menu.offsetHeight;
+      menu.style.left = Math.max(0, Math.min(x, window.innerWidth - width)) + 'px';
+      menu.style.top = Math.max(0, Math.min(y, window.innerHeight - height)) + 'px';
+
+      document.addEventListener('mousedown', outside, true);
+      document.addEventListener('keydown', onKey, true);
+    },
+
     key: function (key, code, keyCode) {
       var el = deepActive();
       var init = { key: key, code: code, keyCode: keyCode, which: keyCode };
@@ -220,6 +287,8 @@ final class DisplayController: ObservableObject {
     @Published var cursorPosition: CGPoint = .zero
 
     private weak var externalScene: UIWindowScene?
+    /// The user agent we last gave the web view (reading it back from the web view is not reliable).
+    private var appliedAgent: String?
     private var mouseObserver: NSObjectProtocol?
     private var urlObservation: NSKeyValueObservation?
     private var titleObservation: NSKeyValueObservation?
@@ -241,19 +310,31 @@ final class DisplayController: ObservableObject {
             WKUserScript(source: YouTubeTV.adBlockScript, injectionTime: .atDocumentStart, forMainFrameOnly: true)
         )
 
+        // Keeps youtube.com/tv full-screen and still, and applies the chosen TV quality.
+        config.userContentController.addUserScript(
+            WKUserScript(source: YouTubeTV.layoutScript, injectionTime: .atDocumentStart, forMainFrameOnly: true)
+        )
+
+        // Lets the right-click menu in the page ask the iPad to copy text.
+        config.userContentController.add(PageMessageHandler(), name: "airbrowser")
+
         let startsDesktop = DisplayController.loadPrefersDesktopSite()
         config.defaultWebpagePreferences.preferredContentMode = startsDesktop ? .desktop : .mobile
 
         let web = WKWebView(frame: .zero, configuration: config)
         web.translatesAutoresizingMaskIntoConstraints = false
         web.allowsBackForwardNavigationGestures = true
+        // The page must fill the whole view, with no extra space reserved for safe areas.
+        web.scrollView.contentInsetAdjustmentBehavior = .never
 
         // iPad: desktop site (macOS Safari identity). iPhone: the normal mobile site.
         // "Request Desktop Site" in Settings changes this.
-        web.customUserAgent = startsDesktop ? DisplayController.desktopUserAgent : nil
+        let startingAgent = DisplayController.standardAgent(desktop: startsDesktop)
+        web.customUserAgent = startingAgent
 
         self.webView = web
         self.cursorView = DisplayController.makeCursorView()
+        self.appliedAgent = startingAgent
 
         NotificationCenter.default.addObserver(
             self,
@@ -290,6 +371,15 @@ final class DisplayController: ObservableObject {
         set { UserDefaults.standard.set(newValue, forKey: DisplayController.desktopSiteKey) }
     }
 
+    static let iPhoneUserAgent = "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1"
+
+    /// The identity for normal (non-TV) pages. On an iPhone the built-in mobile identity is already right;
+    /// an iPad has to pretend to be an iPhone to be given the phone version of a site.
+    private static func standardAgent(desktop: Bool) -> String? {
+        if desktop { return desktopUserAgent }
+        return UIDevice.current.userInterfaceIdiom == .pad ? iPhoneUserAgent : nil
+    }
+
     /// Picks the user agent and page layout for a navigation. Returns true if the web view's user agent
     /// had to change; the caller must then load the request again so the new one is actually sent.
     func prepareIdentity(for request: URLRequest, preferences: WKWebpagePreferences) -> Bool {
@@ -300,12 +390,15 @@ final class DisplayController: ObservableObject {
         if isTV {
             agent = YouTubeTV.currentProfile.userAgent
         } else {
-            agent = desktop ? DisplayController.desktopUserAgent : nil
+            agent = DisplayController.standardAgent(desktop: desktop)
         }
 
         preferences.preferredContentMode = (isTV || desktop) ? .desktop : .mobile
 
-        if webView.customUserAgent != agent {
+        // Compare with what we set ourselves. Once it matches, the request goes through,
+        // so this can never turn into an endless reload loop.
+        if appliedAgent != agent {
+            appliedAgent = agent
             webView.customUserAgent = agent
             return true
         }
@@ -380,7 +473,18 @@ final class DisplayController: ObservableObject {
         isExternalConnected = true
 
         startMouseCapture()
+        nudgeLayout()
         return true
+    }
+
+    /// The page changes size when it moves between the iPad and the monitor. Some pages (YouTube TV)
+    /// only re-measure when told, so announce the new size a few times.
+    private func nudgeLayout() {
+        for delay in [0.2, 0.8, 2.0] {
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+                self?.webView.evaluateJavaScript("window.dispatchEvent(new Event('resize'));")
+            }
+        }
     }
 
     /// Takes the browser off the monitor. The caller puts the web view back on the iPad.
@@ -399,6 +503,7 @@ final class DisplayController: ObservableObject {
 
         externalWindow = nil
         isExternalConnected = false
+        nudgeLayout()
     }
 
     // Kept so older call sites still compile; the monitor is now driven by its scene.
@@ -429,6 +534,11 @@ final class DisplayController: ObservableObject {
     func performClickAtCursor(button: Int = 0) {
         guard isExternalConnected else { return }
 
+        if button == 2 {
+            webView.evaluateJavaScript("window.__ab && window.__ab.contextMenu(\(cursorPosition.x), \(cursorPosition.y));")
+            return
+        }
+
         let js = """
         (function(x, y, button) {
             var el = document.elementFromPoint(x, y);
@@ -452,6 +562,8 @@ final class DisplayController: ObservableObject {
     /// Positive deltaY scrolls the page down.
     func scroll(deltaX: CGFloat, deltaY: CGFloat) {
         guard isExternalConnected, deltaX != 0 || deltaY != 0 else { return }
+        // The TV page is not meant to scroll; moving it is what exposed black bars.
+        if YouTubeTV.isTVAddress(webView.url) { return }
 
         let js = """
         (function(x, y, dx, dy) {
@@ -557,5 +669,18 @@ final class DisplayController: ObservableObject {
         input.leftButton.pressedChangedHandler = nil
         input.rightButton?.pressedChangedHandler = nil
         input.scroll.valueChangedHandler = nil
+    }
+}
+
+/// Receives messages from the page (for example "Copy Link" in the right-click menu).
+final class PageMessageHandler: NSObject, WKScriptMessageHandler {
+    func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
+        guard let body = message.body as? [String: Any],
+              let type = body["type"] as? String else { return }
+
+        if type == "copy", let text = body["text"] as? String, !text.isEmpty {
+            UIPasteboard.general.string = text
+            NotificationCenter.default.post(name: DownloadManager.message, object: nil, userInfo: ["text": "Copied"])
+        }
     }
 }
