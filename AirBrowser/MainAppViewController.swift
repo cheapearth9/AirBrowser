@@ -276,6 +276,7 @@ class MainAppViewController: UIViewController, UITextFieldDelegate, WKNavigation
 
     override func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)
+        updateMouseClickBlocking()
         focusCaptureIfNeeded()
     }
 
@@ -528,7 +529,13 @@ class MainAppViewController: UIViewController, UITextFieldDelegate, WKNavigation
         }
 
         updateAirPlayButton()
+        updateMouseClickBlocking()
         setNeedsUpdateOfPrefersPointerLocked()
+    }
+
+    /// While AirPlay mode is ON, mouse clicks must only reach the monitor, never an iPad button.
+    private func updateMouseClickBlocking() {
+        (view.window as? MainWindow)?.ignoresMouseClicks = isAirPlayModeActive
     }
 
     private func updateAirPlayButton() {
