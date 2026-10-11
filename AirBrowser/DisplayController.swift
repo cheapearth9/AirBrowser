@@ -64,7 +64,15 @@ private let keyBridgeScript = #"""
 
   function fire(el, type, init) {
     var opts = Object.assign({ bubbles: true, cancelable: true, composed: true }, init || {});
-    return el.dispatchEvent(new (win(el).KeyboardEvent)(type, opts));
+    var ev = new (win(el).KeyboardEvent)(type, opts);
+    if (opts.keyCode) {
+      // keyCode/which are read-only on real events, and TV apps (YouTube TV) look at them.
+      try {
+        Object.defineProperty(ev, 'keyCode', { get: function () { return opts.keyCode; } });
+        Object.defineProperty(ev, 'which', { get: function () { return opts.keyCode; } });
+      } catch (e) {}
+    }
+    return el.dispatchEvent(ev);
   }
 
   function setValue(el, value) {
@@ -228,12 +236,21 @@ final class DisplayController: ObservableObject {
             WKUserScript(source: keyBridgeScript, injectionTime: .atDocumentStart, forMainFrameOnly: true)
         )
 
+        // Ad blocking for YouTube's TV interface (youtube.com/tv). Does nothing on other pages.
+        config.userContentController.addUserScript(
+            WKUserScript(source: YouTubeTV.adBlockScript, injectionTime: .atDocumentStart, forMainFrameOnly: true)
+        )
+
+        let startsDesktop = DisplayController.loadPrefersDesktopSite()
+        config.defaultWebpagePreferences.preferredContentMode = startsDesktop ? .desktop : .mobile
+
         let web = WKWebView(frame: .zero, configuration: config)
         web.translatesAutoresizingMaskIntoConstraints = false
         web.allowsBackForwardNavigationGestures = true
 
-        // macOS Safari User-Agent for desktop-class layout
-        web.customUserAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Safari/605.1.15"
+        // iPad: desktop site (macOS Safari identity). iPhone: the normal mobile site.
+        // "Request Desktop Site" in Settings changes this.
+        web.customUserAgent = startsDesktop ? DisplayController.desktopUserAgent : nil
 
         self.webView = web
         self.cursorView = DisplayController.makeCursorView()
@@ -253,6 +270,46 @@ final class DisplayController: ObservableObject {
         titleObservation = web.observe(\.title, options: [.new]) { webView, _ in
             HistoryStore.shared.record(url: webView.url, title: webView.title)
         }
+    }
+
+    // MARK: - Site identity (desktop / mobile / YouTube TV)
+
+    static let desktopUserAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Safari/605.1.15"
+    private static let desktopSiteKey = "AirBrowser.desktopSite"
+
+    /// Saved choice, or the default: iPad = desktop site, iPhone = mobile site.
+    private static func loadPrefersDesktopSite() -> Bool {
+        if let saved = UserDefaults.standard.object(forKey: desktopSiteKey) as? Bool {
+            return saved
+        }
+        return UIDevice.current.userInterfaceIdiom == .pad
+    }
+
+    var prefersDesktopSite: Bool {
+        get { return DisplayController.loadPrefersDesktopSite() }
+        set { UserDefaults.standard.set(newValue, forKey: DisplayController.desktopSiteKey) }
+    }
+
+    /// Picks the user agent and page layout for a navigation. Returns true if the web view's user agent
+    /// had to change; the caller must then load the request again so the new one is actually sent.
+    func prepareIdentity(for request: URLRequest, preferences: WKWebpagePreferences) -> Bool {
+        let isTV = YouTubeTV.isTVAddress(request.url)
+        let desktop = prefersDesktopSite
+
+        let agent: String?
+        if isTV {
+            agent = YouTubeTV.currentProfile.userAgent
+        } else {
+            agent = desktop ? DisplayController.desktopUserAgent : nil
+        }
+
+        preferences.preferredContentMode = (isTV || desktop) ? .desktop : .mobile
+
+        if webView.customUserAgent != agent {
+            webView.customUserAgent = agent
+            return true
+        }
+        return false
     }
 
     private static func makeCursorView() -> UIView {
