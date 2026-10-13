@@ -10,8 +10,13 @@ enum YouTubeTV {
         let userAgent: String
     }
 
-    /// Different devices YouTube may accept. If one misbehaves, Settings can switch to the next.
+    /// The first one is the default. The others are backups if it ever stops working.
     static let profiles: [Profile] = [
+        Profile(
+            // The identity a known "YouTube for TV 4K" browser extension uses to get 4K in the TV interface.
+            name: "PlayStation 4 (4K)",
+            userAgent: "Mozilla/5.0 (PS4; Leanback Shell) Gecko/20100101 Firefox/65.0 LeanbackShell/01.00.01.75 Sony PS4/ (PS4, , no, CH)"
+        ),
         Profile(
             name: "Xbox Series X",
             userAgent: "Mozilla/5.0 (Windows NT 10.0; Xbox; Xbox Series X) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36 Edg/114.0.0.0"
@@ -19,15 +24,11 @@ enum YouTubeTV {
         Profile(
             name: "Samsung TV",
             userAgent: "Mozilla/5.0 (SMART-TV; Linux; Tizen 6.0) AppleWebKit/537.36 (KHTML, like Gecko) 76.0.3809.146/6.0 TV Safari/537.36"
-        ),
-        Profile(
-            // The identity a known "YouTube for TV 4K" browser extension uses to get 4K in the TV interface.
-            name: "PlayStation 4 (4K)",
-            userAgent: "Mozilla/5.0 (PS4; Leanback Shell) Gecko/20100101 Firefox/65.0 LeanbackShell/01.00.01.75 Sony PS4/ (PS4, , no, CH)"
         )
     ]
 
-    private static let profileKey = "AirBrowser.youtubeTVProfile"
+    /// New key (".v2") because the order changed: everyone starts on the new default, the PS4 one.
+    private static let profileKey = "AirBrowser.youtubeTVProfile.v2"
 
     static var profileIndex: Int {
         get {
