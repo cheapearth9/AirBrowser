@@ -521,28 +521,8 @@ class MainAppViewController: UIViewController, UITextFieldDelegate, WKNavigation
             DispatchQueue.main.async { self?.focusCaptureIfNeeded() }
         })
         if YouTubeTV.isTVAddress(webView.url) {
-            alert.addAction(UIAlertAction(
-                title: "YouTube TV profile: " + YouTubeTV.currentProfile.name + " (tap to switch)",
-                style: .default
-            ) { [weak self] _ in
-                YouTubeTV.nextProfile()
-                self?.showToast("YouTube TV profile: " + YouTubeTV.currentProfile.name)
-                self?.webView.reload()
-                DispatchQueue.main.async { self?.focusCaptureIfNeeded() }
-            })
-            alert.addAction(UIAlertAction(
-                title: "YouTube TV quality: " + YouTubeTV.currentQuality.name + " (tap to change)",
-                style: .default
-            ) { [weak self] _ in
-                YouTubeTV.nextQuality()
-                let quality = YouTubeTV.currentQuality
-                self?.showToast("YouTube TV quality: " + quality.name)
-                // The page reads this setting when it starts, so store it there, then reload.
-                let script = "try { localStorage.setItem('" + YouTubeTV.pageQualityKey + "', '" + String(quality.height) + "'); } catch (e) {}"
-                self?.webView.evaluateJavaScript(script) { _, _ in
-                    self?.webView.reload()
-                }
-                DispatchQueue.main.async { self?.focusCaptureIfNeeded() }
+            alert.addAction(UIAlertAction(title: "YouTube TV options...", style: .default) { [weak self] _ in
+                self?.showTVOptions()
             })
         }
         alert.addAction(UIAlertAction(title: "Backup & Restore", style: .default) { [weak self] _ in
@@ -559,6 +539,59 @@ class MainAppViewController: UIViewController, UITextFieldDelegate, WKNavigation
     }
 
     // MARK: - History, downloads and notices
+
+    // MARK: - YouTube TV options
+
+    private func showTVOptions() {
+        let alert = UIAlertController(
+            title: "YouTube TV options",
+            message: "Auto and 1080p use H.264 video (most stable, up to 1080p). 1440p and 4K also allow VP9, which can be less stable.",
+            preferredStyle: .alert
+        )
+
+        alert.addAction(UIAlertAction(title: "Identity: " + YouTubeTV.currentProfile.name + " (tap to switch)", style: .default) { [weak self] _ in
+            YouTubeTV.nextProfile()
+            self?.showToast("YouTube TV identity: " + YouTubeTV.currentProfile.name)
+            self?.webView.reload()
+            DispatchQueue.main.async { self?.focusCaptureIfNeeded() }
+        })
+
+        alert.addAction(UIAlertAction(title: "Quality: " + YouTubeTV.currentQuality.name + " (tap to change)", style: .default) { [weak self] _ in
+            YouTubeTV.nextQuality()
+            self?.showToast("YouTube TV quality: " + YouTubeTV.currentQuality.name)
+            self?.applyTVSettings()
+            DispatchQueue.main.async { self?.focusCaptureIfNeeded() }
+        })
+
+        alert.addAction(UIAlertAction(title: "Ad blocking: " + (YouTubeTV.adBlockEnabled ? "On" : "Off") + " (tap to toggle)", style: .default) { [weak self] _ in
+            YouTubeTV.adBlockEnabled.toggle()
+            self?.showToast("YouTube TV ad blocking: " + (YouTubeTV.adBlockEnabled ? "On" : "Off"))
+            self?.applyTVSettings()
+            DispatchQueue.main.async { self?.focusCaptureIfNeeded() }
+        })
+
+        alert.addAction(UIAlertAction(title: "Copy diagnostics", style: .default) { [weak self] _ in
+            self?.webView.evaluateJavaScript("window.__abReport ? window.__abReport() : 'No data yet. Open youtube.com/tv and play a video first.'") { result, _ in
+                UIPasteboard.general.string = (result as? String) ?? "No data"
+                self?.showToast("Diagnostics copied. Paste them into the chat.")
+            }
+            DispatchQueue.main.async { self?.focusCaptureIfNeeded() }
+        })
+
+        alert.addAction(UIAlertAction(title: "Cancel", style: .cancel) { [weak self] _ in
+            DispatchQueue.main.async { self?.focusCaptureIfNeeded() }
+        })
+        present(alert, animated: true)
+    }
+
+    /// The TV page reads its settings when it starts, so store them in the page, then reload it.
+    private func applyTVSettings() {
+        let script = "try { localStorage.setItem('" + YouTubeTV.pageQualityKey + "', '" + String(YouTubeTV.currentQuality.height) + "'); " +
+            "localStorage.setItem('" + YouTubeTV.pageAdBlockKey + "', '" + (YouTubeTV.adBlockEnabled ? "0" : "1") + "'); } catch (e) {}"
+        webView.evaluateJavaScript(script) { [weak self] _, _ in
+            self?.webView.reload()
+        }
+    }
 
     private func showBackupMenu() {
         let alert = UIAlertController(
@@ -694,6 +727,15 @@ class MainAppViewController: UIViewController, UITextFieldDelegate, WKNavigation
             decisionHandler(.cancel, preferences)
             DispatchQueue.main.async {
                 webView.load(request)
+            }
+            return
+        }
+
+        // Desktop mode: a phone-site address (m.youtube.com...) is swapped for the desktop one.
+        if isMainFrame, let desktopURL = DisplayController.shared.desktopAddress(for: navigationAction.request.url) {
+            decisionHandler(.cancel, preferences)
+            DispatchQueue.main.async {
+                webView.load(URLRequest(url: desktopURL))
             }
             return
         }
