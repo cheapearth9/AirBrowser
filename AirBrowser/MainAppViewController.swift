@@ -731,11 +731,11 @@ class MainAppViewController: UIViewController, UITextFieldDelegate, WKNavigation
             return
         }
 
-        // Desktop mode: a phone-site address (m.youtube.com...) is swapped for the desktop one.
-        if isMainFrame, let desktopURL = DisplayController.shared.desktopAddress(for: navigationAction.request.url) {
+        // Desktop / phone mode: make the address match it (this is what fixes YouTube staying on the phone site).
+        if isMainFrame, let matchedURL = DisplayController.shared.siteModeAddress(for: navigationAction.request.url) {
             decisionHandler(.cancel, preferences)
             DispatchQueue.main.async {
-                webView.load(URLRequest(url: desktopURL))
+                webView.load(URLRequest(url: matchedURL))
             }
             return
         }
