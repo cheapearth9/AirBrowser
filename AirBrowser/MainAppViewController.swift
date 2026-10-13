@@ -325,22 +325,22 @@ class MainAppViewController: UIViewController, UITextFieldDelegate, WKNavigation
             // Arrow keys, top-right corner of the touchpad
             arrowPad.topAnchor.constraint(equalTo: trackpadView.topAnchor, constant: 10),
             arrowPad.trailingAnchor.constraint(equalTo: trackpadView.trailingAnchor, constant: -10),
-            arrowPad.widthAnchor.constraint(equalToConstant: 116),
-            arrowPad.heightAnchor.constraint(equalToConstant: 76),
+            arrowPad.widthAnchor.constraint(equalToConstant: 168),
+            arrowPad.heightAnchor.constraint(equalToConstant: 110),
             upButton.topAnchor.constraint(equalTo: arrowPad.topAnchor),
             upButton.centerXAnchor.constraint(equalTo: downButton.centerXAnchor),
             leftButton.leadingAnchor.constraint(equalTo: arrowPad.leadingAnchor),
             leftButton.bottomAnchor.constraint(equalTo: arrowPad.bottomAnchor),
-            downButton.leadingAnchor.constraint(equalTo: leftButton.trailingAnchor, constant: 4),
+            downButton.leadingAnchor.constraint(equalTo: leftButton.trailingAnchor, constant: 6),
             downButton.bottomAnchor.constraint(equalTo: arrowPad.bottomAnchor),
-            rightButton.leadingAnchor.constraint(equalTo: downButton.trailingAnchor, constant: 4),
+            rightButton.leadingAnchor.constraint(equalTo: downButton.trailingAnchor, constant: 6),
             rightButton.bottomAnchor.constraint(equalTo: arrowPad.bottomAnchor)
         ])
 
         for arrow in [upButton, downButton, leftButton, rightButton] {
             NSLayoutConstraint.activate([
-                arrow.widthAnchor.constraint(equalToConstant: 36),
-                arrow.heightAnchor.constraint(equalToConstant: 36)
+                arrow.widthAnchor.constraint(equalToConstant: 52),
+                arrow.heightAnchor.constraint(equalToConstant: 52)
             ])
         }
 
@@ -454,8 +454,9 @@ class MainAppViewController: UIViewController, UITextFieldDelegate, WKNavigation
     private func makeArrowButton(symbol: String, action: Selector) -> UIButton {
         let button = UIButton(type: .system)
         button.setImage(UIImage(systemName: symbol), for: .normal)
+        button.setPreferredSymbolConfiguration(UIImage.SymbolConfiguration(pointSize: 24, weight: .semibold), forImageIn: .normal)
         button.backgroundColor = .systemBackground
-        button.layer.cornerRadius = 8
+        button.layer.cornerRadius = 12
         button.layer.borderWidth = 1
         button.layer.borderColor = UIColor.separator.cgColor
         button.addTarget(self, action: action, for: .touchUpInside)
