@@ -376,42 +376,67 @@ final class DisplayController: ObservableObject {
         set { UserDefaults.standard.set(newValue, forKey: DisplayController.desktopSiteKey) }
     }
 
-    private var lastDesktopRewrite: (from: String, time: Date)?
+    private var lastSiteModeRewrite: (from: String, time: Date)?
 
-    /// In desktop mode, turns a phone-site address into its desktop one. Without this, a page that
-    /// sent you to m.youtube.com stays on the phone version even after "Request Desktop Site",
-    /// because reloading just loads m.youtube.com again. Returns nil when nothing should change.
-    func desktopAddress(for url: URL?) -> URL? {
-        guard prefersDesktopSite,
-              let url = url,
+    /// Makes an address match the chosen mode (desktop or phone). Returns nil when nothing should change.
+    ///
+    /// YouTube decides between its desktop and phone site with a cookie, not only the user agent, so a
+    /// cookie that got stuck on the phone site keeps you there whatever the mode says. Adding
+    /// app=desktop (or app=m) with persist_app=1 to the address sets that cookie to match the mode.
+    /// Some other sites keep a separate phone address (m.facebook.com...), which is swapped in desktop mode.
+    func siteModeAddress(for url: URL?) -> URL? {
+        guard let url = url,
               var parts = URLComponents(url: url, resolvingAgainstBaseURL: false),
               let host = parts.host?.lowercased() else { return nil }
 
-        var replacement: String?
-        switch host {
-        case "m.youtube.com":
-            replacement = "www.youtube.com"
-        case "m.facebook.com", "mbasic.facebook.com":
-            replacement = "www.facebook.com"
-        case "mobile.twitter.com":
-            replacement = "twitter.com"
-        default:
-            if host.hasSuffix(".m.wikipedia.org") {
-                replacement = host.replacingOccurrences(of: ".m.wikipedia.org", with: ".wikipedia.org")
+        let desktop = prefersDesktopSite
+        var changed = false
+
+        if (host == "www.youtube.com" || host == "youtube.com" || host == "m.youtube.com")
+            && !YouTubeTV.isTVAddress(url) {
+            let wanted = desktop ? "desktop" : "m"
+            var items = parts.queryItems ?? []
+            let current = items.first(where: { $0.name == "app" })?.value
+            if current != wanted {
+                items.removeAll { $0.name == "app" || $0.name == "persist_app" }
+                items.append(URLQueryItem(name: "app", value: wanted))
+                items.append(URLQueryItem(name: "persist_app", value: "1"))
+                parts.queryItems = items
+                changed = true
+            }
+            if desktop && host == "m.youtube.com" {
+                parts.host = "www.youtube.com"
+                changed = true
+            }
+        } else if desktop {
+            var replacement: String?
+            switch host {
+            case "m.facebook.com", "mbasic.facebook.com":
+                replacement = "www.facebook.com"
+            case "mobile.twitter.com":
+                replacement = "twitter.com"
+            default:
+                if host.hasSuffix(".m.wikipedia.org") {
+                    replacement = host.replacingOccurrences(of: ".m.wikipedia.org", with: ".wikipedia.org")
+                }
+            }
+            if let newHost = replacement {
+                parts.host = newHost
+                changed = true
             }
         }
-        guard let newHost = replacement else { return nil }
+
+        guard changed else { return nil }
 
         // Never loop: if the site sent us straight back to this address, leave it alone.
-        if let last = lastDesktopRewrite,
+        if let last = lastSiteModeRewrite,
            last.from == url.absoluteString,
            Date().timeIntervalSince(last.time) < 10 {
             return nil
         }
 
-        parts.host = newHost
         guard let result = parts.url else { return nil }
-        lastDesktopRewrite = (from: url.absoluteString, time: Date())
+        lastSiteModeRewrite = (from: url.absoluteString, time: Date())
         return result
     }
 
