@@ -315,6 +315,11 @@ final class DisplayController: ObservableObject {
             WKUserScript(source: YouTubeTV.layoutScript, injectionTime: .atDocumentStart, forMainFrameOnly: true)
         )
 
+        // Records what the TV player does so a report can be copied from Settings.
+        config.userContentController.addUserScript(
+            WKUserScript(source: YouTubeTV.diagnosticsScript, injectionTime: .atDocumentStart, forMainFrameOnly: true)
+        )
+
         // Lets the right-click menu in the page ask the iPad to copy text.
         config.userContentController.add(PageMessageHandler(), name: "airbrowser")
 
@@ -369,6 +374,45 @@ final class DisplayController: ObservableObject {
     var prefersDesktopSite: Bool {
         get { return DisplayController.loadPrefersDesktopSite() }
         set { UserDefaults.standard.set(newValue, forKey: DisplayController.desktopSiteKey) }
+    }
+
+    private var lastDesktopRewrite: (from: String, time: Date)?
+
+    /// In desktop mode, turns a phone-site address into its desktop one. Without this, a page that
+    /// sent you to m.youtube.com stays on the phone version even after "Request Desktop Site",
+    /// because reloading just loads m.youtube.com again. Returns nil when nothing should change.
+    func desktopAddress(for url: URL?) -> URL? {
+        guard prefersDesktopSite,
+              let url = url,
+              var parts = URLComponents(url: url, resolvingAgainstBaseURL: false),
+              let host = parts.host?.lowercased() else { return nil }
+
+        var replacement: String?
+        switch host {
+        case "m.youtube.com":
+            replacement = "www.youtube.com"
+        case "m.facebook.com", "mbasic.facebook.com":
+            replacement = "www.facebook.com"
+        case "mobile.twitter.com":
+            replacement = "twitter.com"
+        default:
+            if host.hasSuffix(".m.wikipedia.org") {
+                replacement = host.replacingOccurrences(of: ".m.wikipedia.org", with: ".wikipedia.org")
+            }
+        }
+        guard let newHost = replacement else { return nil }
+
+        // Never loop: if the site sent us straight back to this address, leave it alone.
+        if let last = lastDesktopRewrite,
+           last.from == url.absoluteString,
+           Date().timeIntervalSince(last.time) < 10 {
+            return nil
+        }
+
+        parts.host = newHost
+        guard let result = parts.url else { return nil }
+        lastDesktopRewrite = (from: url.absoluteString, time: Date())
+        return result
     }
 
     static let iPhoneUserAgent = "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1"
@@ -458,6 +502,12 @@ final class DisplayController: ObservableObject {
         // on all four sides. Turn that off so the page uses every pixel of the monitor.
         scene.screen.overscanCompensation = UIScreen.OverscanCompensation.none
 
+        // The monitor may be running at a low resolution (YouTube then only offers low video quality).
+        // Switch it to the best mode it supports before any window is attached to it.
+        if let best = DisplayController.bestMode(for: scene.screen), scene.screen.currentMode != best {
+            scene.screen.currentMode = best
+        }
+
         // The view controller pulls the web view and cursor out of the iPad UI and pins them fullscreen.
         let controller = ExternalBrowserViewController(webView: webView, cursorView: cursorView)
         controller.loadViewIfNeeded()
@@ -474,7 +524,36 @@ final class DisplayController: ObservableObject {
 
         startMouseCapture()
         nudgeLayout()
+
+        // Short notice so it is obvious what the monitor is running at.
+        let size = scene.screen.currentMode?.size ?? window.bounds.size
+        NotificationCenter.default.post(
+            name: DownloadManager.message,
+            object: nil,
+            userInfo: ["text": "Monitor: \(Int(size.width)) x \(Int(size.height))"]
+        )
         return true
+    }
+
+    /// The sharpest mode the monitor offers that keeps its own shape (so there are no black bars), up to 4K.
+    private static func bestMode(for screen: UIScreen) -> UIScreenMode? {
+        let modes = screen.availableModes
+        guard !modes.isEmpty else { return nil }
+
+        var candidates = modes
+        if let preferred = screen.preferredMode, preferred.size.height > 0 {
+            let shape = preferred.size.width / preferred.size.height
+            let sameShape = modes.filter { mode in
+                mode.size.height > 0 && abs(mode.size.width / mode.size.height - shape) < 0.02
+            }
+            if !sameShape.isEmpty { candidates = sameShape }
+        }
+
+        let upTo4K = candidates.filter { $0.size.width <= 3840 }
+        let pool = upTo4K.isEmpty ? candidates : upTo4K
+        return pool.max { first, second in
+            first.size.width * first.size.height < second.size.width * second.size.height
+        }
     }
 
     /// The page changes size when it moves between the iPad and the monitor. Some pages (YouTube TV)
