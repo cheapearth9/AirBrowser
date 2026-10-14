@@ -5,4 +5,5 @@ choice for device that can't extend its display to an external display. However,
 people who need something like AirWeb but doesn't need to pay a dime. This browser is also mostly vibecoded.
 Features include:
 -AirPlay functionality via HDMI and wirelessly
--Most things you would expect from a normal browser (swipe gestures, go back and forward), settings menu has very limited options but will update.
+-Most things you would expect from a normal browser (swipe gestures, go back and forward), settings menu is pretty usable.
+-Has support for youtube.com/tv now (still in development) (if you go to this website then there will be a "YouTube TV options" in settings
