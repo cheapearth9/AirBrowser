@@ -146,7 +146,6 @@ final class BackupManager: NSObject, UIDocumentPickerDelegate {
 
         HistoryStore.shared.merge(backup.history)
         DisplayController.shared.prefersDesktopSite = backup.desktopSite
-        YouTubeTV.profileIndex = backup.tvProfile
 
         let cookieStore = DisplayController.shared.webView.configuration.websiteDataStore.httpCookieStore
         let group = DispatchGroup()
