@@ -134,27 +134,137 @@ private let keyBridgeScript = #"""
     list[(i + 1) % list.length].focus();
   }
 
-  window.__ab = {
-    contextMenu: function (x, y) {
-      var old = document.getElementById('__ab_menu');
-      if (old) { old.remove(); }
+  function post(type, text) {
+    try { window.webkit.messageHandlers.airbrowser.postMessage({ type: type, text: text }); } catch (e) {}
+  }
 
+  function closeMenu() {
+    var old = document.getElementById('__ab_menu');
+    if (old) { old.remove(); }
+  }
+
+  // Small floating menu: used for right click and for the Copy bubble after highlighting text.
+  function buildMenu(items, x, y) {
+    closeMenu();
+    var menu = document.createElement('div');
+    menu.id = '__ab_menu';
+    menu.style.cssText = 'position:fixed;z-index:2147483647;min-width:170px;padding:6px 0;border-radius:10px;' +
+      'background:rgba(40,40,44,0.97);color:#fff;font:15px -apple-system,Helvetica,Arial,sans-serif;' +
+      'box-shadow:0 8px 30px rgba(0,0,0,0.5);';
+
+    function close() {
+      menu.remove();
+      document.removeEventListener('mousedown', outside, true);
+      document.removeEventListener('keydown', onKey, true);
+    }
+    function outside(e) { if (!menu.contains(e.target)) { close(); } }
+    function onKey(e) { if (e.key === 'Escape') { close(); } }
+
+    items.forEach(function (item) {
+      var row = document.createElement('div');
+      row.textContent = item[0];
+      row.style.cssText = 'padding:9px 18px;white-space:nowrap;';
+      row.addEventListener('click', function (e) { e.stopPropagation(); close(); item[1](); });
+      menu.appendChild(row);
+    });
+
+    (document.body || document.documentElement).appendChild(menu);
+    var width = menu.offsetWidth, height = menu.offsetHeight;
+    menu.style.left = Math.max(0, Math.min(x, window.innerWidth - width)) + 'px';
+    menu.style.top = Math.max(0, Math.min(y, window.innerHeight - height)) + 'px';
+
+    document.addEventListener('mousedown', outside, true);
+    document.addEventListener('keydown', onKey, true);
+  }
+
+  // Highlight colour that also shows while the monitor window is not the "active" one.
+  function ensureSelectionStyle() {
+    if (document.getElementById('__ab_sel_style')) { return; }
+    var style = document.createElement('style');
+    style.id = '__ab_sel_style';
+    style.textContent = '::selection { background: #3a7bff; color: #fff; }';
+    (document.head || document.documentElement).appendChild(style);
+  }
+
+  function caretAt(x, y) {
+    var range = document.caretRangeFromPoint ? document.caretRangeFromPoint(x, y) : null;
+    return range ? { node: range.startContainer, offset: range.startOffset } : null;
+  }
+
+  window.__ab = {
+    // ---- text highlighting with a held press and a slide (like a mouse) ----
+    selectStart: function (x, y) {
+      closeMenu();
+      ensureSelectionStyle();
+      window.__abAnchor = null;
+      window.__abDragField = null;
+      var el = document.elementFromPoint(x, y);
+      if (el && isTextInput(el)) {            // dragging inside a text box selects its whole text
+        window.__abDragField = el;
+        try { el.focus(); } catch (e) {}
+        return;
+      }
+      window.__abAnchor = caretAt(x, y);
+    },
+
+    selectMove: function (x, y) {
+      if (window.__abDragField) { return; }
+      var anchor = window.__abAnchor;
+      var here = caretAt(x, y);
+      if (!anchor || !here) { return; }
+      try {
+        window.getSelection().setBaseAndExtent(anchor.node, anchor.offset, here.node, here.offset);
+      } catch (e) {}
+    },
+
+    selectEnd: function (x, y) {
+      if (window.__abDragField) {
+        try { window.__abDragField.select(); } catch (e) {}
+      }
+      var text = window.__ab.selectedText();
+      if (text) {
+        buildMenu([
+          ['Copy', function () { post('copy', text); }],
+          ['Select All', function () { window.__ab.selectAll(); }]
+        ], x, y + 18);
+      }
+    },
+
+    selectedText: function () {
+      var el = deepActive();
+      if (isTextInput(el)) {
+        var range = selection(el);
+        if (range[0] !== range[1]) { return el.value.slice(range[0], range[1]); }
+      }
+      var text = '';
+      try { text = String(window.getSelection()); } catch (e) {}
+      return text;
+    },
+
+    selectAll: function () {
+      var el = deepActive();
+      if (isTextInput(el)) { try { el.select(); } catch (e) {} return; }
+      try { document.execCommand('selectAll'); } catch (e) {}
+    },
+
+    contextMenu: function (x, y) {
+      closeMenu();
       var el = document.elementFromPoint(x, y);
       if (!el) { return; }
 
       var ev = new MouseEvent('contextmenu', { bubbles: true, cancelable: true, view: window, clientX: x, clientY: y, button: 2 });
       if (!el.dispatchEvent(ev)) { return; } // the page showed its own menu (YouTube's player does)
 
-      function post(type, text) {
-        try { window.webkit.messageHandlers.airbrowser.postMessage({ type: type, text: text }); } catch (e) {}
-      }
-
       var link = el.closest ? el.closest('a[href]') : null;
       var image = el.closest ? el.closest('img') : null;
-      var selected = '';
-      try { selected = String(window.getSelection()); } catch (e) {}
+      var field = el.closest ? el.closest('input, textarea, [contenteditable=""], [contenteditable="true"]') : null;
+      if (field) { try { field.focus(); } catch (e) {} }
 
+      var selected = window.__ab.selectedText();
       var items = [];
+      if (selected) { items.push(['Copy', function () { post('copy', selected); }]); }
+      if (field) { items.push(['Paste', function () { post('paste', ''); }]); }
+      items.push(['Select All', function () { window.__ab.selectAll(); }]);
       if (link) {
         items.push(['Open Link', function () { window.location.href = link.href; }]);
         items.push(['Copy Link', function () { post('copy', link.href); }]);
@@ -164,42 +274,10 @@ private let keyBridgeScript = #"""
         items.push(['Open Image', function () { window.location.href = source; }]);
         items.push(['Copy Image Address', function () { post('copy', source); }]);
       }
-      if (selected) {
-        items.push(['Copy', function () { post('copy', selected); }]);
-      }
       items.push(['Back', function () { history.back(); }]);
       items.push(['Forward', function () { history.forward(); }]);
       items.push(['Reload', function () { location.reload(); }]);
-
-      var menu = document.createElement('div');
-      menu.id = '__ab_menu';
-      menu.style.cssText = 'position:fixed;z-index:2147483647;min-width:190px;padding:6px 0;border-radius:10px;' +
-        'background:rgba(40,40,44,0.97);color:#fff;font:15px -apple-system,Helvetica,Arial,sans-serif;' +
-        'box-shadow:0 8px 30px rgba(0,0,0,0.5);';
-
-      function close() {
-        menu.remove();
-        document.removeEventListener('mousedown', outside, true);
-        document.removeEventListener('keydown', onKey, true);
-      }
-      function outside(e) { if (!menu.contains(e.target)) { close(); } }
-      function onKey(e) { if (e.key === 'Escape') { close(); } }
-
-      items.forEach(function (item) {
-        var row = document.createElement('div');
-        row.textContent = item[0];
-        row.style.cssText = 'padding:9px 18px;white-space:nowrap;';
-        row.addEventListener('click', function (e) { e.stopPropagation(); close(); item[1](); });
-        menu.appendChild(row);
-      });
-
-      (document.body || document.documentElement).appendChild(menu);
-      var width = menu.offsetWidth, height = menu.offsetHeight;
-      menu.style.left = Math.max(0, Math.min(x, window.innerWidth - width)) + 'px';
-      menu.style.top = Math.max(0, Math.min(y, window.innerHeight - height)) + 'px';
-
-      document.addEventListener('mousedown', outside, true);
-      document.addEventListener('keydown', onKey, true);
+      buildMenu(items, x, y);
     },
 
     key: function (key, code, keyCode) {
@@ -289,6 +367,12 @@ final class DisplayController: ObservableObject {
     private weak var externalScene: UIWindowScene?
     /// The user agent we last gave the web view (reading it back from the web view is not reliable).
     private var appliedAgent: String?
+    /// Press-and-slide (highlighting). A press that never moves is a click.
+    private var pointerIsDown = false
+    private var pointerDragged = false
+    private var pointerDownPosition: CGPoint = .zero
+    /// Last TV address we reloaded from scratch (stops a reload loop).
+    private var lastFreshTV: (from: String, time: Date)?
     private var mouseObserver: NSObjectProtocol?
     private var urlObservation: NSKeyValueObservation?
     private var titleObservation: NSKeyValueObservation?
@@ -313,6 +397,11 @@ final class DisplayController: ObservableObject {
         // Keeps youtube.com/tv full-screen and still, and applies the chosen TV quality.
         config.userContentController.addUserScript(
             WKUserScript(source: YouTubeTV.layoutScript, injectionTime: .atDocumentStart, forMainFrameOnly: true)
+        )
+
+        // Makes the solid black / gray boxes of the TV interface see-through (can be switched off in Settings).
+        config.userContentController.addUserScript(
+            WKUserScript(source: YouTubeTV.transparencyScript, injectionTime: .atDocumentStart, forMainFrameOnly: true)
         )
 
         // Records what the TV player does so a report can be copied from Settings.
@@ -438,6 +527,29 @@ final class DisplayController: ObservableObject {
         guard let result = parts.url else { return nil }
         lastSiteModeRewrite = (from: url.absoluteString, time: Date())
         return result
+    }
+
+    /// YouTube TV's page remembers the device it was first loaded as. A cached copy from an earlier visit
+    /// (for example with another identity) made it start as the wrong device until you reloaded.
+    /// Returns a "ignore the cache" copy of the request when entering YouTube TV, otherwise nil.
+    /// Moving around inside the TV app only changes the part after "#", which is never reloaded.
+    func freshTVRequest(for request: URLRequest, current: URL?) -> URLRequest? {
+        guard let url = request.url, YouTubeTV.isTVAddress(url) else { return nil }
+        if request.cachePolicy == .reloadIgnoringLocalCacheData { return nil }
+
+        func withoutFragment(_ address: URL?) -> String? {
+            guard let address = address, var parts = URLComponents(url: address, resolvingAgainstBaseURL: false) else { return nil }
+            parts.fragment = nil
+            return parts.url?.absoluteString
+        }
+        if YouTubeTV.isTVAddress(current), withoutFragment(current) == withoutFragment(url) { return nil }
+
+        if let last = lastFreshTV, last.from == url.absoluteString, Date().timeIntervalSince(last.time) < 5 { return nil }
+        lastFreshTV = (from: url.absoluteString, time: Date())
+
+        var fresh = request
+        fresh.cachePolicy = .reloadIgnoringLocalCacheData
+        return fresh
     }
 
     static let iPhoneUserAgent = "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1"
@@ -632,6 +744,55 @@ final class DisplayController: ObservableObject {
 
         cursorPosition = CGPoint(x: newX, y: newY)
         cursorView.center = cursorPosition
+
+        if pointerIsDown { pointerDragUpdate() }
+    }
+
+    // MARK: - Press and slide to highlight text
+
+    /// The button went down (mouse button, the Left Click button, or a press-and-hold on the touchpad).
+    func pointerDown() {
+        guard isExternalConnected, !pointerIsDown else { return }
+        pointerIsDown = true
+        pointerDragged = false
+        pointerDownPosition = cursorPosition
+    }
+
+    private func pointerDragUpdate() {
+        let moved = hypot(cursorPosition.x - pointerDownPosition.x, cursorPosition.y - pointerDownPosition.y)
+        if !pointerDragged {
+            if moved < 6 { return } // a little wobble is still a click
+            pointerDragged = true
+            webView.evaluateJavaScript("window.__ab && window.__ab.selectStart(\(pointerDownPosition.x), \(pointerDownPosition.y));")
+        }
+        webView.evaluateJavaScript("window.__ab && window.__ab.selectMove(\(cursorPosition.x), \(cursorPosition.y));")
+    }
+
+    /// The button came up: finish the highlight, or, if nothing was dragged, click.
+    func pointerUp() {
+        guard pointerIsDown else { return }
+        pointerIsDown = false
+        if pointerDragged {
+            pointerDragged = false
+            webView.evaluateJavaScript("window.__ab && window.__ab.selectEnd(\(cursorPosition.x), \(cursorPosition.y));")
+        } else {
+            performClickAtCursor()
+        }
+    }
+
+    // MARK: - Copy / select all (also used by Cmd+C and Cmd+A on a keyboard)
+
+    func copySelection() {
+        webView.evaluateJavaScript("window.__ab ? window.__ab.selectedText() : ''") { result, _ in
+            if let text = result as? String, !text.isEmpty {
+                UIPasteboard.general.string = text
+                NotificationCenter.default.post(name: DownloadManager.message, object: nil, userInfo: ["text": "Copied"])
+            }
+        }
+    }
+
+    func selectAllInPage() {
+        webView.evaluateJavaScript("window.__ab && window.__ab.selectAll();")
     }
 
     /// button: 0 = left click, 2 = right click
@@ -647,6 +808,8 @@ final class DisplayController: ObservableObject {
         (function(x, y, button) {
             var el = document.elementFromPoint(x, y);
             if (!el) { return; }
+            var inMenu = el.closest ? el.closest('#__ab_menu') : null;
+            if (!inMenu) { try { window.getSelection().removeAllRanges(); } catch (e) {} }
             var opts = { bubbles: true, cancelable: true, view: window, clientX: x, clientY: y, button: button };
             el.dispatchEvent(new MouseEvent('mousedown', opts));
             el.dispatchEvent(new MouseEvent('mouseup', opts));
@@ -747,8 +910,8 @@ final class DisplayController: ObservableObject {
             }
         }
         input.leftButton.pressedChangedHandler = { [weak self] _, _, pressed in
-            if pressed {
-                DispatchQueue.main.async { self?.performClickAtCursor() }
+            DispatchQueue.main.async {
+                if pressed { self?.pointerDown() } else { self?.pointerUp() }
             }
         }
         input.rightButton?.pressedChangedHandler = { [weak self] _, _, pressed in
@@ -773,6 +936,8 @@ final class DisplayController: ObservableObject {
         input.leftButton.pressedChangedHandler = nil
         input.rightButton?.pressedChangedHandler = nil
         input.scroll.valueChangedHandler = nil
+        pointerIsDown = false
+        pointerDragged = false
     }
 }
 
@@ -785,6 +950,10 @@ final class PageMessageHandler: NSObject, WKScriptMessageHandler {
         if type == "copy", let text = body["text"] as? String, !text.isEmpty {
             UIPasteboard.general.string = text
             NotificationCenter.default.post(name: DownloadManager.message, object: nil, userInfo: ["text": "Copied"])
+        } else if type == "paste" {
+            if let text = UIPasteboard.general.string, !text.isEmpty {
+                DisplayController.shared.typeText(text)
+            }
         }
     }
 }
