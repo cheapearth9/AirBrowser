@@ -9,6 +9,8 @@ final class KeyCaptureView: UIView, UIKeyInput {
     var onBackspace: (() -> Void)?
     var onKey: ((String, String, Int) -> Void)?
     var onResign: (() -> Void)?
+    var onCopy: (() -> Void)?
+    var onSelectAll: (() -> Void)?
 
     /// false = no on-screen keyboard (a hardware keyboard still works). true = show it.
     var showsSoftwareKeyboard = false
@@ -113,7 +115,15 @@ final class KeyCaptureView: UIView, UIKeyInput {
 
     // MARK: Cmd+V
     override func canPerformAction(_ action: Selector, withSender sender: Any?) -> Bool {
-        return action == #selector(paste(_:))
+        return action == #selector(paste(_:)) || action == #selector(copy(_:)) || action == #selector(selectAll(_:))
+    }
+
+    override func copy(_ sender: Any?) {
+        onCopy?()
+    }
+
+    override func selectAll(_ sender: Any?) {
+        onSelectAll?()
     }
 
     override func paste(_ sender: Any?) {
@@ -238,10 +248,10 @@ class MainAppViewController: UIViewController, UITextFieldDelegate, WKNavigation
         trackpadContainer.addSubview(bottomRow)
 
         // Arrow keys in the top-right corner of the touchpad (up on top, left / down / right below)
-        let upButton = makeArrowButton(symbol: "arrow.up", action: #selector(arrowUpTapped))
-        let downButton = makeArrowButton(symbol: "arrow.down", action: #selector(arrowDownTapped))
-        let leftButton = makeArrowButton(symbol: "arrow.left", action: #selector(arrowLeftTapped))
-        let rightButton = makeArrowButton(symbol: "arrow.right", action: #selector(arrowRightTapped))
+        let upButton = makeArrowButton(symbol: "arrow.up", tag: 1)
+        let downButton = makeArrowButton(symbol: "arrow.down", tag: 2)
+        let leftButton = makeArrowButton(symbol: "arrow.left", tag: 3)
+        let rightButton = makeArrowButton(symbol: "arrow.right", tag: 4)
         let arrowPad = UIView()
         arrowPad.translatesAutoresizingMaskIntoConstraints = false
         for arrow in [upButton, downButton, leftButton, rightButton] {
@@ -251,7 +261,10 @@ class MainAppViewController: UIViewController, UITextFieldDelegate, WKNavigation
         trackpadView.addSubview(arrowPad)
 
         // Left / right click buttons under the touchpad, like a laptop
-        let leftClickButton = makeClickButton(title: "Left Click", action: #selector(leftClickTapped))
+        let leftClickButton = makeClickButton(title: "Left Click", action: #selector(leftClickUp))
+        // Hold it and slide a finger on the touchpad to highlight text, like holding a laptop's button.
+        leftClickButton.addTarget(self, action: #selector(leftClickDown), for: .touchDown)
+        leftClickButton.addTarget(self, action: #selector(leftClickUp), for: [.touchUpOutside, .touchCancel])
         let rightClickButton = makeClickButton(title: "Right Click", action: #selector(rightClickTapped))
         let clickStack = UIStackView(arrangedSubviews: [leftClickButton, rightClickButton])
         clickStack.axis = .horizontal
@@ -268,6 +281,8 @@ class MainAppViewController: UIViewController, UITextFieldDelegate, WKNavigation
         keyCapture.onKey = { key, code, keyCode in
             DisplayController.shared.pressKey(key, code: code, keyCode: keyCode)
         }
+        keyCapture.onCopy = { DisplayController.shared.copySelection() }
+        keyCapture.onSelectAll = { DisplayController.shared.selectAllInPage() }
         keyCapture.onResign = { [weak self] in
             DispatchQueue.main.async {
                 guard let self = self, self.isAirPlayModeActive else { return }
@@ -420,6 +435,14 @@ class MainAppViewController: UIViewController, UITextFieldDelegate, WKNavigation
         let tapGesture = UITapGestureRecognizer(target: self, action: #selector(handleTap(_:)))
         tapGesture.allowedTouchTypes = fingersOnly
         trackpadView.addGestureRecognizer(tapGesture)
+
+        // Press and hold, then slide: highlight text (like holding the mouse button down)
+        let holdGesture = UILongPressGestureRecognizer(target: self, action: #selector(handleHoldDrag(_:)))
+        holdGesture.minimumPressDuration = 0.45
+        holdGesture.allowableMovement = 10
+        holdGesture.numberOfTouchesRequired = 1
+        holdGesture.allowedTouchTypes = fingersOnly
+        trackpadView.addGestureRecognizer(holdGesture)
     }
 
     @objc private func handlePan(_ gesture: UIPanGestureRecognizer) {
@@ -433,6 +456,24 @@ class MainAppViewController: UIViewController, UITextFieldDelegate, WKNavigation
         gesture.setTranslation(.zero, in: trackpadView)
         // Natural scrolling: fingers moving up scroll the page down.
         DisplayController.shared.scroll(deltaX: -translation.x * 2, deltaY: -translation.y * 2)
+    }
+
+    private var holdLastPoint: CGPoint = .zero
+
+    @objc private func handleHoldDrag(_ gesture: UILongPressGestureRecognizer) {
+        let point = gesture.location(in: trackpadView)
+        switch gesture.state {
+        case .began:
+            holdLastPoint = point
+            DisplayController.shared.pointerDown()
+        case .changed:
+            DisplayController.shared.moveCursor(deltaX: point.x - holdLastPoint.x, deltaY: point.y - holdLastPoint.y)
+            holdLastPoint = point
+        case .ended, .cancelled, .failed:
+            DisplayController.shared.pointerUp()
+        default:
+            break
+        }
     }
 
     @objc private func handleTap(_ gesture: UITapGestureRecognizer) {
@@ -451,7 +492,7 @@ class MainAppViewController: UIViewController, UITextFieldDelegate, WKNavigation
         return button
     }
 
-    private func makeArrowButton(symbol: String, action: Selector) -> UIButton {
+    private func makeArrowButton(symbol: String, tag: Int) -> UIButton {
         let button = UIButton(type: .system)
         button.setImage(UIImage(systemName: symbol), for: .normal)
         button.setPreferredSymbolConfiguration(UIImage.SymbolConfiguration(pointSize: 24, weight: .semibold), forImageIn: .normal)
@@ -459,15 +500,39 @@ class MainAppViewController: UIViewController, UITextFieldDelegate, WKNavigation
         button.layer.cornerRadius = 12
         button.layer.borderWidth = 1
         button.layer.borderColor = UIColor.separator.cgColor
-        button.addTarget(self, action: action, for: .touchUpInside)
+        button.tag = tag
+        button.addTarget(self, action: #selector(arrowPressed(_:)), for: .touchDown)
+        button.addTarget(self, action: #selector(arrowReleased), for: [.touchUpInside, .touchUpOutside, .touchCancel])
         return button
     }
 
     // Keys sent to the page on the monitor (for YouTube TV and any page that uses the keyboard)
-    @objc private func arrowUpTapped() { DisplayController.shared.pressKey("ArrowUp", code: "ArrowUp", keyCode: 38) }
-    @objc private func arrowDownTapped() { DisplayController.shared.pressKey("ArrowDown", code: "ArrowDown", keyCode: 40) }
-    @objc private func arrowLeftTapped() { DisplayController.shared.pressKey("ArrowLeft", code: "ArrowLeft", keyCode: 37) }
-    @objc private func arrowRightTapped() { DisplayController.shared.pressKey("ArrowRight", code: "ArrowRight", keyCode: 39) }
+    private let arrowKeys: [Int: (String, Int)] = [
+        1: ("ArrowUp", 38), 2: ("ArrowDown", 40), 3: ("ArrowLeft", 37), 4: ("ArrowRight", 39)
+    ]
+    private var arrowRepeatTimer: Timer?
+
+    /// Pressing an arrow sends it at once; holding it keeps sending it, fast (to scroll through YouTube TV).
+    @objc private func arrowPressed(_ sender: UIButton) {
+        guard let key = arrowKeys[sender.tag] else { return }
+        stopArrowRepeat()
+        DisplayController.shared.pressKey(key.0, code: key.0, keyCode: key.1)
+        arrowRepeatTimer = Timer.scheduledTimer(withTimeInterval: 0.35, repeats: false) { [weak self] _ in
+            self?.arrowRepeatTimer = Timer.scheduledTimer(withTimeInterval: 0.06, repeats: true) { _ in
+                DisplayController.shared.pressKey(key.0, code: key.0, keyCode: key.1)
+            }
+        }
+    }
+
+    @objc private func arrowReleased() {
+        stopArrowRepeat()
+    }
+
+    private func stopArrowRepeat() {
+        arrowRepeatTimer?.invalidate()
+        arrowRepeatTimer = nil
+    }
+
     @objc private func escTapped() { DisplayController.shared.pressKey("Escape", code: "Escape", keyCode: 27) }
     @objc private func enterTapped() { DisplayController.shared.pressKey("Enter", code: "Enter", keyCode: 13) }
 
@@ -487,8 +552,12 @@ class MainAppViewController: UIViewController, UITextFieldDelegate, WKNavigation
         reloadButton.setImage(UIImage(systemName: name), for: .normal)
     }
 
-    @objc private func leftClickTapped() {
-        DisplayController.shared.performClickAtCursor()
+    @objc private func leftClickDown() {
+        DisplayController.shared.pointerDown()
+    }
+
+    @objc private func leftClickUp() {
+        DisplayController.shared.pointerUp()
     }
 
     @objc private func rightClickTapped() {
@@ -546,16 +615,9 @@ class MainAppViewController: UIViewController, UITextFieldDelegate, WKNavigation
     private func showTVOptions() {
         let alert = UIAlertController(
             title: "YouTube TV options",
-            message: "Auto and 1080p use H.264 video (most stable, up to 1080p). 1440p and 4K also allow VP9, which can be less stable.",
+            message: "Auto and 1080p use H.264 video (most stable). 1440p and 4K also allow VP9. If videos fail with 'Something went wrong', try turning Ad blocking off.",
             preferredStyle: .alert
         )
-
-        alert.addAction(UIAlertAction(title: "Identity: " + YouTubeTV.currentProfile.name + " (tap to switch)", style: .default) { [weak self] _ in
-            YouTubeTV.nextProfile()
-            self?.showToast("YouTube TV identity: " + YouTubeTV.currentProfile.name)
-            self?.webView.reload()
-            DispatchQueue.main.async { self?.focusCaptureIfNeeded() }
-        })
 
         alert.addAction(UIAlertAction(title: "Quality: " + YouTubeTV.currentQuality.name + " (tap to change)", style: .default) { [weak self] _ in
             YouTubeTV.nextQuality()
@@ -567,6 +629,20 @@ class MainAppViewController: UIViewController, UITextFieldDelegate, WKNavigation
         alert.addAction(UIAlertAction(title: "Ad blocking: " + (YouTubeTV.adBlockEnabled ? "On" : "Off") + " (tap to toggle)", style: .default) { [weak self] _ in
             YouTubeTV.adBlockEnabled.toggle()
             self?.showToast("YouTube TV ad blocking: " + (YouTubeTV.adBlockEnabled ? "On" : "Off"))
+            self?.applyTVSettings()
+            DispatchQueue.main.async { self?.focusCaptureIfNeeded() }
+        })
+
+        alert.addAction(UIAlertAction(title: "See-through boxes: " + (YouTubeTV.transparencyFixEnabled ? "On" : "Off") + " (tap to toggle)", style: .default) { [weak self] _ in
+            YouTubeTV.transparencyFixEnabled.toggle()
+            self?.showToast("See-through boxes: " + (YouTubeTV.transparencyFixEnabled ? "On" : "Off"))
+            self?.applyTVSettings()
+            DispatchQueue.main.async { self?.focusCaptureIfNeeded() }
+        })
+
+        alert.addAction(UIAlertAction(title: "Auto-retry errors: " + (YouTubeTV.autoRetryEnabled ? "On" : "Off") + " (tap to toggle)", style: .default) { [weak self] _ in
+            YouTubeTV.autoRetryEnabled.toggle()
+            self?.showToast("Auto-retry errors: " + (YouTubeTV.autoRetryEnabled ? "On" : "Off"))
             self?.applyTVSettings()
             DispatchQueue.main.async { self?.focusCaptureIfNeeded() }
         })
@@ -587,8 +663,12 @@ class MainAppViewController: UIViewController, UITextFieldDelegate, WKNavigation
 
     /// The TV page reads its settings when it starts, so store them in the page, then reload it.
     private func applyTVSettings() {
-        let script = "try { localStorage.setItem('" + YouTubeTV.pageQualityKey + "', '" + String(YouTubeTV.currentQuality.height) + "'); " +
-            "localStorage.setItem('" + YouTubeTV.pageAdBlockKey + "', '" + (YouTubeTV.adBlockEnabled ? "0" : "1") + "'); } catch (e) {}"
+        let script = "try { " +
+            "localStorage.setItem('" + YouTubeTV.pageQualityKey + "', '" + String(YouTubeTV.currentQuality.height) + "'); " +
+            "localStorage.setItem('" + YouTubeTV.pageAdBlockKey + "', '" + (YouTubeTV.adBlockEnabled ? "1" : "0") + "'); " +
+            "localStorage.setItem('" + YouTubeTV.pageClearKey + "', '" + (YouTubeTV.transparencyFixEnabled ? "1" : "0") + "'); " +
+            "localStorage.setItem('" + YouTubeTV.pageRetryKey + "', '" + (YouTubeTV.autoRetryEnabled ? "1" : "0") + "'); " +
+            "} catch (e) {}"
         webView.evaluateJavaScript(script) { [weak self] _, _ in
             self?.webView.reload()
         }
@@ -724,10 +804,23 @@ class MainAppViewController: UIViewController, UITextFieldDelegate, WKNavigation
         // (for example when opening youtube.com/tv), load it again so the new identity is really sent.
         let isMainFrame = navigationAction.targetFrame?.isMainFrame ?? true
         if isMainFrame, DisplayController.shared.prepareIdentity(for: navigationAction.request, preferences: preferences) {
-            let request = navigationAction.request
+            let request: URLRequest = {
+                var copy = navigationAction.request
+                if YouTubeTV.isTVAddress(copy.url) { copy.cachePolicy = .reloadIgnoringLocalCacheData }
+                return copy
+            }()
             decisionHandler(.cancel, preferences)
             DispatchQueue.main.async {
                 webView.load(request)
+            }
+            return
+        }
+
+        // Entering YouTube TV: load it from scratch, never from an old cached copy.
+        if isMainFrame, let fresh = DisplayController.shared.freshTVRequest(for: navigationAction.request, current: webView.url) {
+            decisionHandler(.cancel, preferences)
+            DispatchQueue.main.async {
+                webView.load(fresh)
             }
             return
         }
@@ -803,6 +896,7 @@ class MainAppViewController: UIViewController, UITextFieldDelegate, WKNavigation
     }
 
     private func setAirPlayMode(_ on: Bool) {
+        stopArrowRepeat()
         let display = DisplayController.shared
 
         if on && display.startExternalPresentation() {
