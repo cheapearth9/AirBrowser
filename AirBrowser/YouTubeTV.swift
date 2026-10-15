@@ -10,25 +10,17 @@ enum YouTubeTV {
         let userAgent: String
     }
 
-    /// The first one is the default. The others are backups if it ever stops working.
+    /// The only identity: the PlayStation 4 one that a known "YouTube for TV 4K" browser extension uses
+    /// to get 4K in the TV interface. (Xbox and Samsung TV identities were removed: they misbehaved.)
     static let profiles: [Profile] = [
         Profile(
-            // The identity a known "YouTube for TV 4K" browser extension uses to get 4K in the TV interface.
             name: "PlayStation 4 (4K)",
             userAgent: "Mozilla/5.0 (PS4; Leanback Shell) Gecko/20100101 Firefox/65.0 LeanbackShell/01.00.01.75 Sony PS4/ (PS4, , no, CH)"
-        ),
-        Profile(
-            name: "Xbox Series X",
-            userAgent: "Mozilla/5.0 (Windows NT 10.0; Xbox; Xbox Series X) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36 Edg/114.0.0.0"
-        ),
-        Profile(
-            name: "Samsung TV",
-            userAgent: "Mozilla/5.0 (SMART-TV; Linux; Tizen 6.0) AppleWebKit/537.36 (KHTML, like Gecko) 76.0.3809.146/6.0 TV Safari/537.36"
         )
     ]
 
-    /// New key (".v2") because the order changed: everyone starts on the new default, the PS4 one.
-    private static let profileKey = "AirBrowser.youtubeTVProfile.v2"
+    /// New key (".v3"): a saved old choice (or a restored backup) can no longer leave you on another device.
+    private static let profileKey = "AirBrowser.youtubeTVProfile.v3"
 
     static var profileIndex: Int {
         get {
@@ -67,7 +59,7 @@ enum YouTubeTV {
 
     /// Names of the settings the page reads (stored in the page's own localStorage).
     static let pageQualityKey = "__ab_tv_res"
-    static let pageAdBlockKey = "__ab_tv_noads"
+    static let pageAdBlockKey = "__ab_tv_adblock"
 
     static var qualityIndex: Int {
         get {
@@ -96,6 +88,25 @@ enum YouTubeTV {
         set { UserDefaults.standard.set(newValue, forKey: adBlockKey) }
     }
 
+    // MARK: Transparency fix and auto-retry on/off
+
+    static let pageClearKey = "__ab_tv_clear"
+    static let pageRetryKey = "__ab_tv_retry"
+    private static let clearBoxesKey = "AirBrowser.youtubeTVClearBoxes"
+    private static let autoRetryKey = "AirBrowser.youtubeTVAutoRetry"
+
+    /// Turns the solid black / gray boxes of the TV interface see-through.
+    static var transparencyFixEnabled: Bool {
+        get { return (UserDefaults.standard.object(forKey: clearBoxesKey) as? Bool) ?? true }
+        set { UserDefaults.standard.set(newValue, forKey: clearBoxesKey) }
+    }
+
+    /// Presses "Try again" by itself when the TV app shows "Something went wrong".
+    static var autoRetryEnabled: Bool {
+        get { return (UserDefaults.standard.object(forKey: autoRetryKey) as? Bool) ?? true }
+        set { UserDefaults.standard.set(newValue, forKey: autoRetryKey) }
+    }
+
     /// True for youtube.com/tv (including youtube.com/tv#/watch?v=...).
     static func isTVAddress(_ url: URL?) -> Bool {
         guard let url = url, let host = url.host?.lowercased() else { return false }
@@ -111,7 +122,7 @@ enum YouTubeTV {
 (function () {
   if (location.hostname.indexOf('youtube.com') === -1) { return; }
   if (location.pathname !== '/tv' && location.pathname.indexOf('/tv/') !== 0) { return; }
-  try { if (localStorage.getItem('__ab_tv_noads') === '1') { return; } } catch (e) {}
+  try { if (localStorage.getItem('__ab_tv_adblock') === '0') { return; } } catch (e) {}
   if (window.__abTVAdBlock) { return; }
   window.__abTVAdBlock = true;
 
@@ -159,6 +170,13 @@ enum YouTubeTV {
   if (location.pathname !== '/tv' && location.pathname.indexOf('/tv/') !== 0) { return; }
   if (window.__abTVLayout) { return; }
   window.__abTVLayout = true;
+
+  // Safari does not report device memory, so apps may assume a weak device and switch to a plain look.
+  try {
+    if (navigator.deviceMemory === undefined) {
+      Object.defineProperty(Navigator.prototype, 'deviceMemory', { get: function () { return 8; }, configurable: true });
+    }
+  } catch (e) {}
 
   // 0. YouTube's TV app has feature switches. On TVs it thinks are weak it turns on a flat "lightweight"
   //    look (solid boxes instead of see-through ones) and lower video quality. Force the full-featured set.
@@ -287,6 +305,84 @@ enum YouTubeTV {
 })();
 """#
 
+    /// Turns the solid black and gray boxes of the TV interface see-through (title text, times, buttons).
+    /// It looks at the page as it is drawn, finds small solid black or dark-gray boxes that sit on top of
+    /// the picture, and marks them. It re-checks an element whenever its class changes, so highlighted
+    /// (white) buttons keep working. It can be switched off in the YouTube TV options.
+    static let transparencyScript = #"""
+(function () {
+  if (location.hostname.indexOf('youtube.com') === -1) { return; }
+  if (location.pathname !== '/tv' && location.pathname.indexOf('/tv/') !== 0) { return; }
+  try { if (localStorage.getItem('__ab_tv_clear') === '0') { return; } } catch (e) {}
+  if (window.__abTVClear) { return; }
+  window.__abTVClear = true;
+
+  var style = document.createElement('style');
+  style.textContent =
+    '[data-ab-clear="black"] { background-color: transparent !important; ' +
+    'text-shadow: 0 0 8px rgba(0,0,0,1), 0 0 3px rgba(0,0,0,1), 0 1px 3px rgba(0,0,0,1) !important; }' +
+    '[data-ab-clear="gray"] { background-color: rgba(40,40,40,0.3) !important; }';
+  (document.head || document.documentElement).appendChild(style);
+
+  function parseColor(text) {
+    var match = /rgba?\(([^)]+)\)/.exec(text || '');
+    if (!match) { return null; }
+    var parts = match[1].split(',').map(parseFloat);
+    return { r: parts[0], g: parts[1], b: parts[2], a: parts.length > 3 ? parts[3] : 1 };
+  }
+
+  function consider(el) {
+    if (!el || el.nodeType !== 1 || !el.hasAttribute || el.hasAttribute('data-ab-clear')) { return; }
+    var tag = el.tagName;
+    if (tag === 'VIDEO' || tag === 'SCRIPT' || tag === 'STYLE' || tag === 'IMG' || tag === 'CANVAS' || tag === 'svg') { return; }
+    if (el.closest && el.closest('#__ab_menu')) { return; }
+
+    var color = parseColor(getComputedStyle(el).backgroundColor);
+    if (!color || color.a < 0.97) { return; }
+    var isBlack = Math.max(color.r, color.g, color.b) < 24 && Math.abs(color.r - color.b) < 4;
+    var isGray = Math.abs(color.r - color.g) < 4 && Math.abs(color.g - color.b) < 4 && color.r >= 24 && color.r <= 100;
+    if (!isBlack && !isGray) { return; }
+
+    var box = el.getBoundingClientRect();
+    if (box.width < 4 || box.height < 20) { return; }
+    if (box.width > window.innerWidth * 0.97 || box.height > window.innerHeight * 0.5) { return; }
+    if (el.querySelector && el.querySelector('video')) { return; }
+
+    el.setAttribute('data-ab-clear', isBlack ? 'black' : 'gray');
+  }
+
+  function scanTree(root) {
+    consider(root);
+    var all = root.querySelectorAll ? root.querySelectorAll('*') : [];
+    for (var i = 0; i < all.length && i < 600; i++) { consider(all[i]); }
+  }
+
+  var recheck = new Set();
+  var timer = null;
+  function flush() {
+    timer = null;
+    recheck.forEach(function (el) { consider(el); });
+    recheck.clear();
+  }
+
+  var observer = new MutationObserver(function (records) {
+    records.forEach(function (record) {
+      if (record.type === 'childList') {
+        record.addedNodes.forEach(function (node) { if (node.nodeType === 1) { scanTree(node); } });
+      } else if (record.type === 'attributes') {
+        var el = record.target;
+        // The element's look is changing (for example it got highlighted): show the page's own look
+        // right away and look again once any animation has finished.
+        if (el.hasAttribute && el.hasAttribute('data-ab-clear')) { el.removeAttribute('data-ab-clear'); }
+        recheck.add(el);
+      }
+    });
+    if (recheck.size && !timer) { timer = setTimeout(flush, 350); }
+  });
+  observer.observe(document.documentElement, { childList: true, subtree: true, attributes: true, attributeFilter: ['class'] });
+})();
+"""#
+
     /// Records what is happening in the player so a report can be copied from Settings.
     static let diagnosticsScript = #"""
 (function () {
@@ -342,13 +438,80 @@ enum YouTubeTV {
 
   window.addEventListener('error', function (event) { log('error: ' + event.message); });
 
+  function shortUrl(url) {
+    try {
+      var parsed = new URL(url, location.href);
+      return parsed.host + parsed.pathname.substr(0, 40);
+    } catch (e) { return String(url).substr(0, 60); }
+  }
+
+  // Failed requests are the most useful clue when a video dies ("HTTP 403 ...googlevideo.com/videoplayback").
+  if (window.fetch) {
+    var realFetch = window.fetch;
+    window.fetch = function (input) {
+      var url = '';
+      try { url = typeof input === 'string' ? input : ((input && input.url) || ''); } catch (e) {}
+      return realFetch.apply(this, arguments).then(function (response) {
+        if (response && response.status >= 400) { log('HTTP ' + response.status + ' ' + shortUrl(url)); }
+        return response;
+      }, function (error) {
+        log('NETWORK FAIL ' + shortUrl(url) + ' ' + error);
+        throw error;
+      });
+    };
+  }
+
+  if (window.XMLHttpRequest) {
+    var realOpen = XMLHttpRequest.prototype.open;
+    XMLHttpRequest.prototype.open = function (method, url) {
+      var self = this;
+      this.__abUrl = url;
+      this.addEventListener('loadend', function () {
+        if (self.status >= 400 || self.status === 0) { log('XHR ' + self.status + ' ' + shortUrl(self.__abUrl)); }
+      });
+      return realOpen.apply(this, arguments);
+    };
+  }
+
+  var realConsoleError = console.error;
+  console.error = function () {
+    try { log('console.error: ' + Array.prototype.slice.call(arguments).map(String).join(' ').substr(0, 200)); } catch (e) {}
+    return realConsoleError.apply(console, arguments);
+  };
+
+  window.addEventListener('unhandledrejection', function (event) {
+    log('promise rejected: ' + String(event.reason).substr(0, 160));
+  });
+
+  // When the app shows "Something went wrong", press its Try again button (already highlighted) for you.
+  var retries = 0, lastRetry = 0, waiting = false;
+  function errorShowing() {
+    try { return !!document.body && document.body.textContent.indexOf('Something went wrong') !== -1; } catch (e) { return false; }
+  }
+  setInterval(function () {
+    var enabled = true;
+    try { enabled = localStorage.getItem('__ab_tv_retry') !== '0'; } catch (e) {}
+    if (!enabled || waiting || !errorShowing()) { return; }
+    if (Date.now() - lastRetry > 120000) { retries = 0; }
+    if (retries >= 3) { return; }
+    waiting = true;
+    setTimeout(function () {
+      waiting = false;
+      if (!errorShowing()) { return; }
+      retries += 1;
+      lastRetry = Date.now();
+      log('auto-retry ' + retries);
+      if (window.__ab && window.__ab.key) { window.__ab.key('Enter', 'Enter', 13); }
+    }, 1500);
+  }, 2000);
+
   window.__abReport = function () {
     var lines = [];
     lines.push('UA: ' + navigator.userAgent);
     lines.push('Window: ' + window.innerWidth + 'x' + window.innerHeight + ' @' + window.devicePixelRatio +
       ' | screen ' + window.screen.width + 'x' + window.screen.height);
     lines.push('Settings: res=' + (localStorage.getItem('__ab_tv_res') || 'auto') +
-      ' noads=' + (localStorage.getItem('__ab_tv_noads') || '0'));
+      ' adblock=' + (localStorage.getItem('__ab_tv_adblock') || '1'));
 
     var real = window.__abRealIsTypeSupported || MediaSource.isTypeSupported.bind(MediaSource);
     var probes = [
