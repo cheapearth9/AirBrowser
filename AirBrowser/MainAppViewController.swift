@@ -10,6 +10,7 @@ final class KeyCaptureView: UIView, UIKeyInput {
     var onKey: ((String, String, Int) -> Void)?
     var onResign: (() -> Void)?
     var onCopy: (() -> Void)?
+    var onBackspaceWord: (() -> Void)?
     var onSelectAll: (() -> Void)?
 
     /// false = no on-screen keyboard (a hardware keyboard still works). true = show it.
@@ -33,6 +34,8 @@ final class KeyCaptureView: UIView, UIKeyInput {
     var hasText: Bool { true }
 
     private var lastReturnPress = Date.distantPast
+    private var lastDeleteTime = Date.distantPast
+    private var deleteStreak = 0
 
     func insertText(_ text: String) {
         // Return is handled in pressesBegan below; ignore the same key arriving here a moment later.
@@ -40,8 +43,22 @@ final class KeyCaptureView: UIView, UIKeyInput {
         onText?(text)
     }
 
+    /// Holding Backspace repeats this call. After about a second of holding, it switches from one letter
+    /// to a whole word per repeat, like a real keyboard. Works for the on-screen and a hardware keyboard.
     func deleteBackward() {
-        onBackspace?()
+        let now = Date()
+        if now.timeIntervalSince(lastDeleteTime) < 0.25 {
+            deleteStreak += 1
+        } else {
+            deleteStreak = 0
+        }
+        lastDeleteTime = now
+
+        if deleteStreak >= 8 {
+            onBackspaceWord?()
+        } else {
+            onBackspace?()
+        }
     }
 
     // MARK: Keys that don't produce text (arrows, escape, enter, tab, page up/down, ...)
@@ -278,6 +295,7 @@ class MainAppViewController: UIViewController, UITextFieldDelegate, WKNavigation
         keyCapture.alpha = 0.01
         keyCapture.onText = { text in DisplayController.shared.typeText(text) }
         keyCapture.onBackspace = { DisplayController.shared.pressBackspace() }
+        keyCapture.onBackspaceWord = { DisplayController.shared.pressBackspaceWord() }
         keyCapture.onKey = { key, code, keyCode in
             DisplayController.shared.pressKey(key, code: code, keyCode: keyCode)
         }
