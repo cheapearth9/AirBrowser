@@ -124,6 +124,25 @@ private let keyBridgeScript = #"""
     }
   }
 
+  // Delete the word before the caret (what holding Backspace does on a normal keyboard after a moment).
+  function removeWord(el) {
+    if (isTextInput(el)) {
+      var r = selection(el), v = el.value, a = r[0], b = r[1];
+      if (a === b) {
+        var i = a;
+        while (i > 0 && /\s/.test(v.charAt(i - 1))) { i--; }
+        while (i > 0 && !/\s/.test(v.charAt(i - 1))) { i--; }
+        a = i;
+        if (a === b) { return; }
+      }
+      setValue(el, v.slice(0, a) + v.slice(b));
+      caret(el, a);
+      changed(el, 'deleteWordBackward');
+    } else if (el.isContentEditable) {
+      try { el.ownerDocument.execCommand('deleteWordBackward'); } catch (e) {}
+    }
+  }
+
   function focusNext(el) {
     var list = Array.prototype.filter.call(
       document.querySelectorAll('a[href], button, input, select, textarea, [tabindex]'),
@@ -340,6 +359,10 @@ private let keyBridgeScript = #"""
 
     backspace: function () {
       window.__ab.key('Backspace', 'Backspace', 8);
+    },
+
+    backspaceWord: function () {
+      removeWord(deepActive());
     }
   };
 })();
@@ -862,6 +885,10 @@ final class DisplayController: ObservableObject {
 
     func pressBackspace() {
         callBridge("backspace()")
+    }
+
+    func pressBackspaceWord() {
+        callBridge("backspaceWord()")
     }
 
     func pressKey(_ key: String, code: String, keyCode: Int) {
