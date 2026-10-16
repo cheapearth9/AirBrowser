@@ -101,9 +101,9 @@ enum YouTubeTV {
         set { UserDefaults.standard.set(newValue, forKey: clearBoxesKey) }
     }
 
-    /// Presses "Try again" by itself when the TV app shows "Something went wrong".
+    /// Presses "Try again" by itself when the TV app shows "Something went wrong". Off by default.
     static var autoRetryEnabled: Bool {
-        get { return (UserDefaults.standard.object(forKey: autoRetryKey) as? Bool) ?? true }
+        get { return (UserDefaults.standard.object(forKey: autoRetryKey) as? Bool) ?? false }
         set { UserDefaults.standard.set(newValue, forKey: autoRetryKey) }
     }
 
@@ -305,10 +305,13 @@ enum YouTubeTV {
 })();
 """#
 
-    /// Turns the solid black and gray boxes of the TV interface see-through (title text, times, buttons).
-    /// It looks at the page as it is drawn, finds small solid black or dark-gray boxes that sit on top of
-    /// the picture, and marks them. It re-checks an element whenever its class changes, so highlighted
-    /// (white) buttons keep working. It can be switched off in the YouTube TV options.
+    /// Makes the video player's overlay look like the real YouTube TV: no solid black box behind the title and
+    /// times, no black panel behind the related videos (a soft fade instead), and softer gray buttons.
+    ///
+    /// It only works while a video is playing full-size, so the home page keeps its normal dark look. Small
+    /// badges sitting on thumbnails (the duration, "4K") keep their boxes, and side panels (comments, quality)
+    /// are never touched. A box is fixed the instant it appears or its look changes, so nothing flashes.
+    /// It can be switched off in the YouTube TV options.
     static let transparencyScript = #"""
 (function () {
   if (location.hostname.indexOf('youtube.com') === -1) { return; }
@@ -320,9 +323,21 @@ enum YouTubeTV {
   var style = document.createElement('style');
   style.textContent =
     '[data-ab-clear="black"] { background-color: transparent !important; ' +
-    'text-shadow: 0 0 8px rgba(0,0,0,1), 0 0 3px rgba(0,0,0,1), 0 1px 3px rgba(0,0,0,1) !important; }' +
+      'text-shadow: 0 0 8px rgba(0,0,0,1), 0 0 3px rgba(0,0,0,1), 0 1px 3px rgba(0,0,0,1) !important; }' +
+    '[data-ab-clear="panel"] { background: linear-gradient(to bottom, rgba(0,0,0,0) 0%, ' +
+      'rgba(0,0,0,0.6) 40%, rgba(0,0,0,0.88) 100%) !important; }' +
     '[data-ab-clear="gray"] { background-color: rgba(40,40,40,0.3) !important; }';
   (document.head || document.documentElement).appendChild(style);
+
+  var playerOn = false;
+
+  // The player is "on" while a video fills most of the screen.
+  function evaluatePlayer() {
+    var video = document.querySelector('video');
+    if (!video) { playerOn = false; return; }
+    var r = video.getBoundingClientRect();
+    playerOn = r.width > window.innerWidth * 0.6 && r.height > window.innerHeight * 0.5;
+  }
 
   function parseColor(text) {
     var match = /rgba?\(([^)]+)\)/.exec(text || '');
@@ -331,13 +346,59 @@ enum YouTubeTV {
     return { r: parts[0], g: parts[1], b: parts[2], a: parts.length > 3 ? parts[3] : 1 };
   }
 
-  function consider(el) {
-    if (!el || el.nodeType !== 1 || !el.hasAttribute || el.hasAttribute('data-ab-clear')) { return; }
+  // The colour an element is heading for (not the half-way colour of a running fade).
+  function finalBackground(el) {
+    var value = getComputedStyle(el).backgroundColor;
+    try {
+      var animations = el.getAnimations ? el.getAnimations() : [];
+      for (var i = 0; i < animations.length; i++) {
+        var animation = animations[i];
+        if (animation.transitionProperty === 'background-color' && animation.effect && animation.effect.getKeyframes) {
+          var frames = animation.effect.getKeyframes();
+          var last = frames[frames.length - 1];
+          if (last && last.backgroundColor) { value = last.backgroundColor; }
+        }
+      }
+    } catch (e) {}
+    return value;
+  }
+
+  // A small label that sits on top of a much bigger picture is a thumbnail badge (duration...): keep it.
+  function overlapsThumbnail(el, box) {
+    var parent = el.parentElement;
+    for (var depth = 0; parent && depth < 3; depth++, parent = parent.parentElement) {
+      var pictures = parent.querySelectorAll('img, [style*="background-image"]');
+      for (var i = 0; i < pictures.length && i < 8; i++) {
+        var r = pictures[i].getBoundingClientRect();
+        if (r.width * r.height < box.width * box.height * 6) { continue; }
+        var across = Math.min(box.right, r.right) - Math.max(box.left, r.left);
+        var down = Math.min(box.bottom, r.bottom) - Math.max(box.top, r.top);
+        if (across > 0 && down > 0 && across * down >= box.width * box.height * 0.8) { return true; }
+      }
+    }
+    return false;
+  }
+
+  // Side panels (comments, quality, ...) are left exactly as the app draws them.
+  function insideSidePanel(el) {
+    var vw = window.innerWidth, vh = window.innerHeight;
+    var node = el;
+    for (var depth = 0; node && depth < 10; depth++, node = node.parentElement) {
+      var r = node.getBoundingClientRect();
+      if (r.width > vw * 0.25 && r.width < vw * 0.5 && r.height > vh * 0.6 && r.left > vw * 0.45) { return true; }
+    }
+    return false;
+  }
+
+  function consider(el, final) {
+    if (!playerOn || !el || el.nodeType !== 1 || !el.hasAttribute) { return; }
+    if (el.hasAttribute('data-ab-clear')) { return; }
+    if (typeof SVGElement !== 'undefined' && el instanceof SVGElement) { return; }
     var tag = el.tagName;
-    if (tag === 'VIDEO' || tag === 'SCRIPT' || tag === 'STYLE' || tag === 'IMG' || tag === 'CANVAS' || tag === 'svg') { return; }
+    if (tag === 'VIDEO' || tag === 'SCRIPT' || tag === 'STYLE' || tag === 'IMG' || tag === 'CANVAS' || tag === 'SOURCE') { return; }
     if (el.closest && el.closest('#__ab_menu')) { return; }
 
-    var color = parseColor(getComputedStyle(el).backgroundColor);
+    var color = parseColor(final ? finalBackground(el) : getComputedStyle(el).backgroundColor);
     if (!color || color.a < 0.97) { return; }
     var isBlack = Math.max(color.r, color.g, color.b) < 24 && Math.abs(color.r - color.b) < 4;
     var isGray = Math.abs(color.r - color.g) < 4 && Math.abs(color.g - color.b) < 4 && color.r >= 24 && color.r <= 100;
@@ -345,41 +406,74 @@ enum YouTubeTV {
 
     var box = el.getBoundingClientRect();
     if (box.width < 4 || box.height < 20) { return; }
-    if (box.width > window.innerWidth * 0.97 || box.height > window.innerHeight * 0.5) { return; }
+    var vw = window.innerWidth, vh = window.innerHeight;
+
+    // A wide black panel (the related videos shelf) fades in instead of being a solid block.
+    var isPanel = isBlack && box.width >= vw * 0.6 && box.width <= vw * 0.97 && box.height >= 100;
+    if (!isPanel && (box.width > vw * 0.6 || box.height > vh * 0.5)) { return; }
+
     if (el.querySelector && el.querySelector('video')) { return; }
+    if (insideSidePanel(el)) { return; }
+    if (!isPanel && overlapsThumbnail(el, box)) { return; }
 
-    el.setAttribute('data-ab-clear', isBlack ? 'black' : 'gray');
+    el.setAttribute('data-ab-clear', isPanel ? 'panel' : (isBlack ? 'black' : 'gray'));
   }
 
-  function scanTree(root) {
-    consider(root);
+  function scanTree(root, limit) {
+    if (!playerOn || !root || root.nodeType !== 1) { return 0; }
+    var count = 1;
+    consider(root, false);
     var all = root.querySelectorAll ? root.querySelectorAll('*') : [];
-    for (var i = 0; i < all.length && i < 600; i++) { consider(all[i]); }
+    for (var i = 0; i < all.length && i < limit; i++) { consider(all[i], false); count++; }
+    return count;
   }
 
-  var recheck = new Set();
-  var timer = null;
-  function flush() {
-    timer = null;
-    recheck.forEach(function (el) { consider(el); });
-    recheck.clear();
+  // Something's look is changing (for example it got highlighted): show the app's own look, work out where
+  // it is heading, and fix it again straight away, before anything is drawn.
+  function refresh(el) {
+    if (!el || el.nodeType !== 1) { return; }
+    if (el.hasAttribute('data-ab-clear')) { el.removeAttribute('data-ab-clear'); }
+    consider(el, true);
+    var marked = el.querySelectorAll ? el.querySelectorAll('[data-ab-clear]') : [];
+    for (var i = 0; i < marked.length && i < 80; i++) {
+      marked[i].removeAttribute('data-ab-clear');
+      consider(marked[i], true);
+    }
+  }
+
+  function scanLater(node, delay) {
+    setTimeout(function () {
+      if (!node.isConnected) { return; }
+      evaluatePlayer();
+      scanTree(node, 800);
+    }, delay);
   }
 
   var observer = new MutationObserver(function (records) {
+    evaluatePlayer();
+    var budget = 1500;
     records.forEach(function (record) {
+      if (budget <= 0) { return; }
       if (record.type === 'childList') {
-        record.addedNodes.forEach(function (node) { if (node.nodeType === 1) { scanTree(node); } });
+        record.addedNodes.forEach(function (node) {
+          if (node.nodeType !== 1) { return; }
+          budget -= scanTree(node, 800);
+          scanLater(node, 80);   // layout may not be ready yet: look again a moment later
+          scanLater(node, 400);
+        });
       } else if (record.type === 'attributes') {
-        var el = record.target;
-        // The element's look is changing (for example it got highlighted): show the page's own look
-        // right away and look again once any animation has finished.
-        if (el.hasAttribute && el.hasAttribute('data-ab-clear')) { el.removeAttribute('data-ab-clear'); }
-        recheck.add(el);
+        refresh(record.target);
+        budget -= 1;
       }
     });
-    if (recheck.size && !timer) { timer = setTimeout(flush, 350); }
   });
   observer.observe(document.documentElement, { childList: true, subtree: true, attributes: true, attributeFilter: ['class'] });
+
+  // Safety net for anything that was missed.
+  setInterval(function () {
+    evaluatePlayer();
+    if (playerOn && document.body) { scanTree(document.body, 2500); }
+  }, 1200);
 })();
 """#
 
@@ -486,11 +580,18 @@ enum YouTubeTV {
   // When the app shows "Something went wrong", press its Try again button (already highlighted) for you.
   var retries = 0, lastRetry = 0, waiting = false;
   function errorShowing() {
-    try { return !!document.body && document.body.textContent.indexOf('Something went wrong') !== -1; } catch (e) { return false; }
+    try {
+      var nodes = document.querySelectorAll('div, span, h1, h2, h3, p');
+      for (var i = 0; i < nodes.length && i < 4000; i++) {
+        var node = nodes[i];
+        if (node.children.length === 0 && node.textContent.trim() === 'Something went wrong' && node.getClientRects().length > 0) { return true; }
+      }
+    } catch (e) {}
+    return false;
   }
   setInterval(function () {
-    var enabled = true;
-    try { enabled = localStorage.getItem('__ab_tv_retry') !== '0'; } catch (e) {}
+    var enabled = false;
+    try { enabled = localStorage.getItem('__ab_tv_retry') === '1'; } catch (e) {}
     if (!enabled || waiting || !errorShowing()) { return; }
     if (Date.now() - lastRetry > 120000) { retries = 0; }
     if (retries >= 3) { return; }
