@@ -633,7 +633,7 @@ class MainAppViewController: UIViewController, UITextFieldDelegate, WKNavigation
     private func showTVOptions() {
         let alert = UIAlertController(
             title: "YouTube TV options",
-            message: "Auto and 1080p use H.264 video (most stable). 1440p and 4K also allow VP9. If videos fail with 'Something went wrong', try turning Ad blocking off.",
+            message: "Auto and 1080p use H.264 video (most stable). 1440p and 4K also allow VP9. If something breaks, turn on Diagnostics recording, reload, repeat it, then Copy diagnostics.",
             preferredStyle: .alert
         )
 
@@ -665,6 +665,13 @@ class MainAppViewController: UIViewController, UITextFieldDelegate, WKNavigation
             DispatchQueue.main.async { self?.focusCaptureIfNeeded() }
         })
 
+        alert.addAction(UIAlertAction(title: "Diagnostics recording: " + (YouTubeTV.diagnosticsEnabled ? "On" : "Off") + " (tap to toggle)", style: .default) { [weak self] _ in
+            YouTubeTV.diagnosticsEnabled.toggle()
+            self?.showToast("Diagnostics recording: " + (YouTubeTV.diagnosticsEnabled ? "On" : "Off"))
+            self?.applyTVSettings()
+            DispatchQueue.main.async { self?.focusCaptureIfNeeded() }
+        })
+
         alert.addAction(UIAlertAction(title: "Copy diagnostics", style: .default) { [weak self] _ in
             self?.webView.evaluateJavaScript("window.__abReport ? window.__abReport() : 'No data yet. Open youtube.com/tv and play a video first.'") { result, _ in
                 UIPasteboard.general.string = (result as? String) ?? "No data"
@@ -686,6 +693,7 @@ class MainAppViewController: UIViewController, UITextFieldDelegate, WKNavigation
             "localStorage.setItem('" + YouTubeTV.pageAdBlockKey + "', '" + (YouTubeTV.adBlockEnabled ? "1" : "0") + "'); " +
             "localStorage.setItem('" + YouTubeTV.pageClearKey + "', '" + (YouTubeTV.transparencyFixEnabled ? "1" : "0") + "'); " +
             "localStorage.setItem('" + YouTubeTV.pageRetryKey + "', '" + (YouTubeTV.autoRetryEnabled ? "1" : "0") + "'); " +
+            "localStorage.setItem('" + YouTubeTV.pageDiagKey + "', '" + (YouTubeTV.diagnosticsEnabled ? "1" : "0") + "'); " +
             "} catch (e) {}"
         webView.evaluateJavaScript(script) { [weak self] _, _ in
             self?.webView.reload()
