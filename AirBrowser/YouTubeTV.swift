@@ -92,6 +92,8 @@ enum YouTubeTV {
 
     static let pageClearKey = "__ab_tv_clear"
     static let pageRetryKey = "__ab_tv_retry"
+    static let pageDiagKey = "__ab_tv_diag"
+    private static let diagKey = "AirBrowser.youtubeTVDiagnostics"
     private static let clearBoxesKey = "AirBrowser.youtubeTVClearBoxes"
     private static let autoRetryKey = "AirBrowser.youtubeTVAutoRetry"
 
@@ -99,6 +101,13 @@ enum YouTubeTV {
     static var transparencyFixEnabled: Bool {
         get { return (UserDefaults.standard.object(forKey: clearBoxesKey) as? Bool) ?? true }
         set { UserDefaults.standard.set(newValue, forKey: clearBoxesKey) }
+    }
+
+    /// Records player errors and failed requests so "Copy diagnostics" has something to show. Off by default,
+    /// because watching every request is the kind of thing that can upset a page.
+    static var diagnosticsEnabled: Bool {
+        get { return (UserDefaults.standard.object(forKey: diagKey) as? Bool) ?? false }
+        set { UserDefaults.standard.set(newValue, forKey: diagKey) }
     }
 
     /// Presses "Try again" by itself when the TV app shows "Something went wrong". Off by default.
@@ -162,75 +171,14 @@ enum YouTubeTV {
 })();
 """#
 
-    /// Makes the TV page fill the screen and stay put, forces its full-featured mode, chooses which video
-    /// formats it may use, and (if chosen in Settings) makes it report a bigger display.
+    /// Makes the TV page fill the screen and stay put, chooses which video formats it may use, and
+    /// (if chosen in Settings) makes it report a bigger display.
     static let layoutScript = #"""
 (function () {
   if (location.hostname.indexOf('youtube.com') === -1) { return; }
   if (location.pathname !== '/tv' && location.pathname.indexOf('/tv/') !== 0) { return; }
   if (window.__abTVLayout) { return; }
   window.__abTVLayout = true;
-
-  // Safari does not report device memory, so apps may assume a weak device and switch to a plain look.
-  try {
-    if (navigator.deviceMemory === undefined) {
-      Object.defineProperty(Navigator.prototype, 'deviceMemory', { get: function () { return 8; }, configurable: true });
-    }
-  } catch (e) {}
-
-  // 0. YouTube's TV app has feature switches. On TVs it thinks are weak it turns on a flat "lightweight"
-  //    look (solid boxes instead of see-through ones) and lower video quality. Force the full-featured set.
-  var forcedFlags = {
-    enableAnimations: true,
-    enableListAnimations: true,
-    enableRoundedProgressBar: true,
-    enableLiveChat: true,
-    isLimitedMemory: false,
-    enableLightweightTimely: false
-  };
-
-  function lockFlags(switches) {
-    Object.keys(forcedFlags).forEach(function (name) {
-      try {
-        Object.defineProperty(switches, name, {
-          get: function () { return forcedFlags[name]; },
-          set: function () {},
-          configurable: true,
-          enumerable: true
-        });
-      } catch (e) {}
-    });
-  }
-
-  function patchConfig(config) {
-    if (!config || typeof config !== 'object') { return config; }
-    var current = config.featureSwitches;
-    if (!current || typeof current !== 'object') { current = {}; }
-    lockFlags(current);
-    try {
-      Object.defineProperty(config, 'featureSwitches', {
-        get: function () { return current; },
-        set: function (value) {
-          current = (value && typeof value === 'object') ? value : {};
-          lockFlags(current);
-        },
-        configurable: true,
-        enumerable: true
-      });
-    } catch (e) {}
-    return config;
-  }
-
-  // The page creates window.tectonicConfig itself, so watch for it being assigned and patch it then.
-  var holder = patchConfig(window.tectonicConfig || {});
-  try {
-    Object.defineProperty(window, 'tectonicConfig', {
-      get: function () { return holder; },
-      set: function (value) { holder = patchConfig(value); },
-      configurable: true,
-      enumerable: true
-    });
-  } catch (e) {}
 
   // 1. The page must never scroll: scrolling slid the picture and showed black bars.
   var style = document.createElement('style');
@@ -322,6 +270,7 @@ enum YouTubeTV {
 
   var style = document.createElement('style');
   style.textContent =
+    '[data-ab-clear] { transition: none !important; }' +
     '[data-ab-clear="black"] { background-color: transparent !important; ' +
       'text-shadow: 0 0 8px rgba(0,0,0,1), 0 0 3px rgba(0,0,0,1), 0 1px 3px rgba(0,0,0,1) !important; }' +
     '[data-ab-clear="panel"] { background: linear-gradient(to bottom, rgba(0,0,0,0) 0%, ' +
@@ -399,13 +348,13 @@ enum YouTubeTV {
     if (el.closest && el.closest('#__ab_menu')) { return; }
 
     var color = parseColor(final ? finalBackground(el) : getComputedStyle(el).backgroundColor);
-    if (!color || color.a < 0.97) { return; }
+    if (!color || color.a < 0.4) { return; }
     var isBlack = Math.max(color.r, color.g, color.b) < 24 && Math.abs(color.r - color.b) < 4;
     var isGray = Math.abs(color.r - color.g) < 4 && Math.abs(color.g - color.b) < 4 && color.r >= 24 && color.r <= 100;
     if (!isBlack && !isGray) { return; }
 
     var box = el.getBoundingClientRect();
-    if (box.width < 4 || box.height < 20) { return; }
+    if (box.width < 4 || box.height < 14) { return; }
     var vw = window.innerWidth, vh = window.innerHeight;
 
     // A wide black panel (the related videos shelf) fades in instead of being a solid block.
@@ -478,6 +427,7 @@ enum YouTubeTV {
 """#
 
     /// Records what is happening in the player so a report can be copied from Settings.
+    /// The watching part only runs when "Diagnostics recording" is on in the YouTube TV options.
     static let diagnosticsScript = #"""
 (function () {
   if (location.hostname.indexOf('youtube.com') === -1) { return; }
@@ -486,51 +436,13 @@ enum YouTubeTV {
   window.__abDiag = true;
   window.__abLog = [];
 
+  var recording = false;
+  try { recording = localStorage.getItem('__ab_tv_diag') === '1'; } catch (e) {}
+
   function log(text) {
     window.__abLog.push(new Date().toISOString().substr(11, 8) + ' ' + text);
     if (window.__abLog.length > 60) { window.__abLog.shift(); }
   }
-
-  // Remember which qualities and codecs YouTube offers for the current video.
-  function summarize(value) {
-    try {
-      var data = value && (value.streamingData || (value.playerResponse && value.playerResponse.streamingData));
-      if (!data || !data.adaptiveFormats) { return; }
-      var heights = {}, codecs = {};
-      data.adaptiveFormats.forEach(function (format) {
-        if (format.height) { heights[format.height] = true; }
-        var part = String(format.mimeType || '').split('codecs=')[1];
-        if (part) { codecs[part.replace(/["']/g, '').split('.')[0]] = true; }
-      });
-      var list = Object.keys(heights).map(Number).sort(function (a, b) { return a - b; });
-      window.__abFormats = 'heights ' + list.join(',') + ' | codecs ' + Object.keys(codecs).join(',');
-    } catch (e) {}
-  }
-
-  var parse = JSON.parse;
-  JSON.parse = function () {
-    var value = parse.apply(this, arguments);
-    summarize(value);
-    return value;
-  };
-
-  if (window.MediaSource && MediaSource.prototype.addSourceBuffer) {
-    var addSourceBuffer = MediaSource.prototype.addSourceBuffer;
-    MediaSource.prototype.addSourceBuffer = function (type) {
-      log('addSourceBuffer ' + type);
-      return addSourceBuffer.apply(this, arguments);
-    };
-  }
-
-  document.addEventListener('error', function (event) {
-    var target = event.target;
-    if (target && target.tagName === 'VIDEO') {
-      var error = target.error;
-      log('VIDEO ERROR code=' + (error ? error.code : '?') + ' ' + (error && error.message ? error.message : ''));
-    }
-  }, true);
-
-  window.addEventListener('error', function (event) { log('error: ' + event.message); });
 
   function shortUrl(url) {
     try {
@@ -539,43 +451,86 @@ enum YouTubeTV {
     } catch (e) { return String(url).substr(0, 60); }
   }
 
-  // Failed requests are the most useful clue when a video dies ("HTTP 403 ...googlevideo.com/videoplayback").
-  if (window.fetch) {
-    var realFetch = window.fetch;
-    window.fetch = function (input) {
-      var url = '';
-      try { url = typeof input === 'string' ? input : ((input && input.url) || ''); } catch (e) {}
-      return realFetch.apply(this, arguments).then(function (response) {
-        if (response && response.status >= 400) { log('HTTP ' + response.status + ' ' + shortUrl(url)); }
-        return response;
-      }, function (error) {
-        log('NETWORK FAIL ' + shortUrl(url) + ' ' + error);
-        throw error;
-      });
+  if (recording) {
+    // Which qualities and codecs YouTube offers for the current video.
+    var summarize = function (value) {
+      try {
+        var data = value && (value.streamingData || (value.playerResponse && value.playerResponse.streamingData));
+        if (!data || !data.adaptiveFormats) { return; }
+        var heights = {}, codecs = {};
+        data.adaptiveFormats.forEach(function (format) {
+          if (format.height) { heights[format.height] = true; }
+          var part = String(format.mimeType || '').split('codecs=')[1];
+          if (part) { codecs[part.replace(/["']/g, '').split('.')[0]] = true; }
+        });
+        var list = Object.keys(heights).map(Number).sort(function (a, b) { return a - b; });
+        window.__abFormats = 'heights ' + list.join(',') + ' | codecs ' + Object.keys(codecs).join(',');
+      } catch (e) {}
     };
-  }
 
-  if (window.XMLHttpRequest) {
-    var realOpen = XMLHttpRequest.prototype.open;
-    XMLHttpRequest.prototype.open = function (method, url) {
-      var self = this;
-      this.__abUrl = url;
-      this.addEventListener('loadend', function () {
-        if (self.status >= 400 || self.status === 0) { log('XHR ' + self.status + ' ' + shortUrl(self.__abUrl)); }
-      });
-      return realOpen.apply(this, arguments);
+    var parse = JSON.parse;
+    JSON.parse = function () {
+      var value = parse.apply(this, arguments);
+      summarize(value);
+      return value;
     };
+
+    if (window.MediaSource && MediaSource.prototype.addSourceBuffer) {
+      var addSourceBuffer = MediaSource.prototype.addSourceBuffer;
+      MediaSource.prototype.addSourceBuffer = function (type) {
+        log('addSourceBuffer ' + type);
+        return addSourceBuffer.apply(this, arguments);
+      };
+    }
+
+    document.addEventListener('error', function (event) {
+      var target = event.target;
+      if (target && target.tagName === 'VIDEO') {
+        var error = target.error;
+        log('VIDEO ERROR code=' + (error ? error.code : '?') + ' ' + (error && error.message ? error.message : ''));
+      }
+    }, true);
+
+    window.addEventListener('error', function (event) { log('error: ' + event.message); });
+
+    // Failed requests are the most useful clue when something dies ("HTTP 403 ...googlevideo.com/videoplayback").
+    if (window.fetch) {
+      var realFetch = window.fetch;
+      window.fetch = function (input) {
+        var url = '';
+        try { url = typeof input === 'string' ? input : ((input && input.url) || ''); } catch (e) {}
+        return realFetch.apply(this, arguments).then(function (response) {
+          if (response && response.status >= 400) { log('HTTP ' + response.status + ' ' + shortUrl(url)); }
+          return response;
+        }, function (error) {
+          log('NETWORK FAIL ' + shortUrl(url) + ' ' + error);
+          throw error;
+        });
+      };
+    }
+
+    if (window.XMLHttpRequest) {
+      var realOpen = XMLHttpRequest.prototype.open;
+      XMLHttpRequest.prototype.open = function (method, url) {
+        var self = this;
+        this.__abUrl = url;
+        this.addEventListener('loadend', function () {
+          if (self.status >= 400 || self.status === 0) { log('XHR ' + self.status + ' ' + shortUrl(self.__abUrl)); }
+        });
+        return realOpen.apply(this, arguments);
+      };
+    }
+
+    var realConsoleError = console.error;
+    console.error = function () {
+      try { log('console.error: ' + Array.prototype.slice.call(arguments).map(String).join(' ').substr(0, 200)); } catch (e) {}
+      return realConsoleError.apply(console, arguments);
+    };
+
+    window.addEventListener('unhandledrejection', function (event) {
+      log('promise rejected: ' + String(event.reason).substr(0, 160));
+    });
   }
-
-  var realConsoleError = console.error;
-  console.error = function () {
-    try { log('console.error: ' + Array.prototype.slice.call(arguments).map(String).join(' ').substr(0, 200)); } catch (e) {}
-    return realConsoleError.apply(console, arguments);
-  };
-
-  window.addEventListener('unhandledrejection', function (event) {
-    log('promise rejected: ' + String(event.reason).substr(0, 160));
-  });
 
   // When the app shows "Something went wrong", press its Try again button (already highlighted) for you.
   var retries = 0, lastRetry = 0, waiting = false;
@@ -612,7 +567,10 @@ enum YouTubeTV {
     lines.push('Window: ' + window.innerWidth + 'x' + window.innerHeight + ' @' + window.devicePixelRatio +
       ' | screen ' + window.screen.width + 'x' + window.screen.height);
     lines.push('Settings: res=' + (localStorage.getItem('__ab_tv_res') || 'auto') +
-      ' adblock=' + (localStorage.getItem('__ab_tv_adblock') || '1'));
+      ' adblock=' + (localStorage.getItem('__ab_tv_adblock') || '1') +
+      ' boxes=' + (localStorage.getItem('__ab_tv_clear') || '1') +
+      ' retry=' + (localStorage.getItem('__ab_tv_retry') || '0'));
+    lines.push('Recording: ' + (recording ? 'on' : 'OFF (turn on in YouTube TV options, reload, reproduce the problem, copy again)'));
 
     var real = window.__abRealIsTypeSupported || MediaSource.isTypeSupported.bind(MediaSource);
     var probes = [
@@ -628,7 +586,7 @@ enum YouTubeTV {
       lines.push('Device supports ' + probe[0] + ': ' + ok);
     });
 
-    lines.push('Offered: ' + (window.__abFormats || 'nothing yet (play a video first)'));
+    lines.push('Offered: ' + (window.__abFormats || 'nothing recorded'));
     lines.push('--- recent events ---');
     return lines.concat(window.__abLog.slice(-30)).join('\n');
   };
