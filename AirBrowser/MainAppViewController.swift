@@ -165,6 +165,7 @@ class MainAppViewController: UIViewController, UITextFieldDelegate, WKNavigation
     private var keyboardTriggerButton: UIButton!
     private var airPlayToggleButton: UIButton!
     private var reloadButton: UIButton!
+    private var autoHideButton: UIButton!
     private var keyCapture: KeyCaptureView!
 
     private var isAirPlayModeActive = false
@@ -277,6 +278,18 @@ class MainAppViewController: UIViewController, UITextFieldDelegate, WKNavigation
         }
         trackpadView.addSubview(arrowPad)
 
+        // Top-left corner of the touchpad: hide the monitor's cursor after 10 seconds without moving it
+        autoHideButton = UIButton(type: .system)
+        autoHideButton.translatesAutoresizingMaskIntoConstraints = false
+        autoHideButton.titleLabel?.font = .systemFont(ofSize: 14, weight: .semibold)
+        autoHideButton.titleLabel?.numberOfLines = 2
+        autoHideButton.titleLabel?.textAlignment = .center
+        autoHideButton.layer.cornerRadius = 12
+        autoHideButton.layer.borderWidth = 1
+        autoHideButton.addTarget(self, action: #selector(toggleAutoHideCursor), for: .touchUpInside)
+        trackpadView.addSubview(autoHideButton)
+        updateAutoHideButton()
+
         // Left / right click buttons under the touchpad, like a laptop
         let leftClickButton = makeClickButton(title: "Left Click", action: #selector(leftClickUp))
         // Hold it and slide a finger on the touchpad to highlight text, like holding a laptop's button.
@@ -354,6 +367,12 @@ class MainAppViewController: UIViewController, UITextFieldDelegate, WKNavigation
             bottomRow.heightAnchor.constraint(equalToConstant: 44),
             escButton.widthAnchor.constraint(equalTo: enterButton.widthAnchor),
             keyboardTriggerButton.widthAnchor.constraint(equalTo: escButton.widthAnchor, multiplier: 2),
+
+            // Cursor auto-hide toggle, top-left corner of the touchpad
+            autoHideButton.topAnchor.constraint(equalTo: trackpadView.topAnchor, constant: 10),
+            autoHideButton.leadingAnchor.constraint(equalTo: trackpadView.leadingAnchor, constant: 10),
+            autoHideButton.widthAnchor.constraint(equalToConstant: 150),
+            autoHideButton.heightAnchor.constraint(equalToConstant: 52),
 
             // Arrow keys, top-right corner of the touchpad
             arrowPad.topAnchor.constraint(equalTo: trackpadView.topAnchor, constant: 10),
@@ -522,6 +541,20 @@ class MainAppViewController: UIViewController, UITextFieldDelegate, WKNavigation
         button.addTarget(self, action: #selector(arrowPressed(_:)), for: .touchDown)
         button.addTarget(self, action: #selector(arrowReleased), for: [.touchUpInside, .touchUpOutside, .touchCancel])
         return button
+    }
+
+    @objc private func toggleAutoHideCursor() {
+        DisplayController.shared.autoHideCursor.toggle()
+        updateAutoHideButton()
+        showToast(DisplayController.shared.autoHideCursor ? "Cursor hides after 10 seconds" : "Cursor always visible")
+    }
+
+    private func updateAutoHideButton() {
+        let on = DisplayController.shared.autoHideCursor
+        autoHideButton.setTitle(on ? "Auto-hide cursor\nON (10 s)" : "Auto-hide cursor\nOFF", for: .normal)
+        autoHideButton.setTitleColor(on ? .systemBlue : .secondaryLabel, for: .normal)
+        autoHideButton.backgroundColor = on ? UIColor.systemBlue.withAlphaComponent(0.12) : .systemBackground
+        autoHideButton.layer.borderColor = (on ? UIColor.systemBlue : UIColor.separator).cgColor
     }
 
     // Keys sent to the page on the monitor (for YouTube TV and any page that uses the keyboard)
