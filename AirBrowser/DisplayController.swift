@@ -9,6 +9,8 @@ extension Notification.Name {
 }
 
 // MARK: - Tunables (change these if a physical mouse feels off)
+/// Seconds without moving before the cursor hides (when auto-hide is switched on).
+private let cursorHideDelay: TimeInterval = 10
 /// Pointer speed for a physical mouse / trackpad.
 private let mouseSpeed: CGFloat = 2.0
 /// Pixels scrolled per unit of wheel movement.
@@ -390,6 +392,8 @@ final class DisplayController: ObservableObject {
     private weak var externalScene: UIWindowScene?
     /// The user agent we last gave the web view (reading it back from the web view is not reliable).
     private var appliedAgent: String?
+    private var lastCursorActivity = Date()
+    private var cursorWatchTimer: Timer?
     /// Press-and-slide (highlighting). A press that never moves is a click.
     private var pointerIsDown = false
     private var pointerDragged = false
@@ -683,6 +687,7 @@ final class DisplayController: ObservableObject {
         isExternalConnected = true
 
         startMouseCapture()
+        startCursorWatch()
         nudgeLayout()
 
         // Short notice so it is obvious what the monitor is running at.
@@ -732,6 +737,7 @@ final class DisplayController: ObservableObject {
         guard let window = externalWindow else { return }
 
         stopMouseCapture()
+        stopCursorWatch()
 
         webView.removeFromSuperview()
         cursorView.removeFromSuperview()
@@ -767,8 +773,52 @@ final class DisplayController: ObservableObject {
 
         cursorPosition = CGPoint(x: newX, y: newY)
         cursorView.center = cursorPosition
+        cursorActivity()
 
         if pointerIsDown { pointerDragUpdate() }
+    }
+
+    // MARK: - Hide the cursor when it has not moved for a while
+
+    private static let autoHideKey = "AirBrowser.autoHideCursor"
+
+    /// When on, the cursor on the monitor fades away after 10 seconds without moving, and comes back on any
+    /// movement or click. When off, it always stays visible. Saved between launches.
+    var autoHideCursor: Bool {
+        get { return UserDefaults.standard.bool(forKey: DisplayController.autoHideKey) }
+        set {
+            UserDefaults.standard.set(newValue, forKey: DisplayController.autoHideKey)
+            cursorActivity()
+        }
+    }
+
+    /// Call whenever the cursor moves or clicks: shows it and restarts the countdown.
+    func cursorActivity() {
+        lastCursorActivity = Date()
+        if cursorView.alpha < 1 { cursorView.alpha = 1 }
+    }
+
+    private func startCursorWatch() {
+        cursorWatchTimer?.invalidate()
+        lastCursorActivity = Date()
+        cursorView.alpha = 1
+        cursorWatchTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
+            guard let self = self else { return }
+            let idle = Date().timeIntervalSince(self.lastCursorActivity)
+            if self.autoHideCursor && idle >= cursorHideDelay {
+                if self.cursorView.alpha > 0 {
+                    UIView.animate(withDuration: 0.3) { self.cursorView.alpha = 0 }
+                }
+            } else if self.cursorView.alpha < 1 {
+                self.cursorView.alpha = 1
+            }
+        }
+    }
+
+    private func stopCursorWatch() {
+        cursorWatchTimer?.invalidate()
+        cursorWatchTimer = nil
+        cursorView.alpha = 1
     }
 
     // MARK: - Press and slide to highlight text
@@ -821,6 +871,7 @@ final class DisplayController: ObservableObject {
     /// button: 0 = left click, 2 = right click
     func performClickAtCursor(button: Int = 0) {
         guard isExternalConnected else { return }
+        cursorActivity()
 
         if button == 2 {
             webView.evaluateJavaScript("window.__ab && window.__ab.contextMenu(\(cursorPosition.x), \(cursorPosition.y));")
