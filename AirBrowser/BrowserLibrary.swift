@@ -503,3 +503,109 @@ final class DownloadsViewController: LibraryViewController, QLPreviewControllerD
         return (previewURL ?? URL(fileURLWithPath: "/")) as NSURL
     }
 }
+
+
+// MARK: - Page size (plus / minus)
+
+/// A small sheet with big minus and plus buttons to make the current website smaller or larger.
+final class PageSizeViewController: UIViewController, UIAdaptivePresentationControllerDelegate {
+    var onClose: (() -> Void)?
+
+    private let siteLabel = UILabel()
+    private let percentLabel = UILabel()
+
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        title = "Page size"
+        view.backgroundColor = .systemBackground
+        navigationItem.leftBarButtonItem = UIBarButtonItem(barButtonSystemItem: .done, target: self, action: #selector(doneTapped))
+        navigationController?.presentationController?.delegate = self
+        preferredContentSize = CGSize(width: 420, height: 320)
+
+        siteLabel.font = .systemFont(ofSize: 15)
+        siteLabel.textColor = .secondaryLabel
+        siteLabel.textAlignment = .center
+        siteLabel.numberOfLines = 2
+
+        percentLabel.font = .systemFont(ofSize: 48, weight: .bold)
+        percentLabel.textAlignment = .center
+        percentLabel.widthAnchor.constraint(equalToConstant: 160).isActive = true
+
+        let minus = makeRoundButton(symbol: "minus", action: #selector(smaller))
+        let plus = makeRoundButton(symbol: "plus", action: #selector(bigger))
+
+        let row = UIStackView(arrangedSubviews: [minus, percentLabel, plus])
+        row.axis = .horizontal
+        row.alignment = .center
+        row.spacing = 16
+
+        let reset = UIButton(type: .system)
+        reset.setTitle("Reset to 100%", for: .normal)
+        reset.titleLabel?.font = .systemFont(ofSize: 17, weight: .semibold)
+        reset.addTarget(self, action: #selector(resetTapped), for: .touchUpInside)
+
+        let column = UIStackView(arrangedSubviews: [siteLabel, row, reset])
+        column.axis = .vertical
+        column.alignment = .center
+        column.spacing = 24
+        column.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(column)
+
+        NSLayoutConstraint.activate([
+            column.centerXAnchor.constraint(equalTo: view.centerXAnchor),
+            column.centerYAnchor.constraint(equalTo: view.centerYAnchor),
+            column.leadingAnchor.constraint(greaterThanOrEqualTo: view.leadingAnchor, constant: 20),
+            column.trailingAnchor.constraint(lessThanOrEqualTo: view.trailingAnchor, constant: -20)
+        ])
+
+        updateLabels()
+    }
+
+    private func makeRoundButton(symbol: String, action: Selector) -> UIButton {
+        let button = UIButton(type: .system)
+        button.setImage(UIImage(systemName: symbol), for: .normal)
+        button.setPreferredSymbolConfiguration(UIImage.SymbolConfiguration(pointSize: 30, weight: .bold), forImageIn: .normal)
+        button.backgroundColor = .secondarySystemBackground
+        button.layer.cornerRadius = 36
+        button.widthAnchor.constraint(equalToConstant: 72).isActive = true
+        button.heightAnchor.constraint(equalToConstant: 72).isActive = true
+        button.addTarget(self, action: action, for: .touchUpInside)
+        return button
+    }
+
+    @objc private func smaller() {
+        DisplayController.shared.zoomOut()
+        updateLabels()
+    }
+
+    @objc private func bigger() {
+        DisplayController.shared.zoomIn()
+        updateLabels()
+    }
+
+    @objc private func resetTapped() {
+        DisplayController.shared.resetZoom()
+        updateLabels()
+    }
+
+    private func updateLabels() {
+        let display = DisplayController.shared
+        percentLabel.text = "\(Int((display.currentZoom * 100).rounded()))%"
+        if let host = display.currentZoomHost {
+            siteLabel.text = "For " + host
+        } else {
+            siteLabel.text = "Open a page first"
+        }
+    }
+
+    @objc private func doneTapped() {
+        dismiss(animated: true) { [weak self] in
+            self?.onClose?()
+        }
+    }
+
+    // Swiping the sheet down
+    func presentationControllerDidDismiss(_ presentationController: UIPresentationController) {
+        onClose?()
+    }
+}
