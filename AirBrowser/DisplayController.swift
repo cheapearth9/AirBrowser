@@ -379,7 +379,10 @@ private let keyBridgeScript = #"""
 final class DisplayController: ObservableObject {
     static let shared = DisplayController()
 
-    let webView: WKWebView
+    private(set) var webView: WKWebView
+    /// True while browsing privately: nothing is saved (no history, cookies or site data).
+    private(set) var isIncognito = false
+    private var incognitoZoomLevels: [String: CGFloat] = [:]
     let cursorView: UIView
     var externalWindow: UIWindow?
 
@@ -405,7 +408,29 @@ final class DisplayController: ObservableObject {
     private var titleObservation: NSKeyValueObservation?
 
     private init() {
+        let startingAgent = DisplayController.standardAgent(desktop: DisplayController.loadPrefersDesktopSite())
+
+        self.webView = DisplayController.buildWebView(incognito: false)
+        self.cursorView = DisplayController.makeCursorView()
+        self.appliedAgent = startingAgent
+
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(screenDidDisconnect(_:)),
+            name: UIScreen.didDisconnectNotification,
+            object: nil
+        )
+
+        attachHistoryObservers()
+    }
+
+    /// Builds the web view the whole app shares. A private (incognito) one keeps nothing on the device.
+    private static func buildWebView(incognito: Bool) -> WKWebView {
         let config = WKWebViewConfiguration()
+        if incognito {
+            // A store that lives only in memory: cookies, logins and site data vanish with the web view.
+            config.websiteDataStore = WKWebsiteDataStore.nonPersistent()
+        }
         config.allowsInlineMediaPlayback = true
         config.mediaTypesRequiringUserActionForPlayback = []
 
@@ -449,29 +474,104 @@ final class DisplayController: ObservableObject {
         web.scrollView.contentInsetAdjustmentBehavior = .never
 
         // iPad: desktop site (macOS Safari identity). iPhone: the normal mobile site.
-        // "Request Desktop Site" in Settings changes this.
-        let startingAgent = DisplayController.standardAgent(desktop: startsDesktop)
-        web.customUserAgent = startingAgent
+        web.customUserAgent = DisplayController.standardAgent(desktop: startsDesktop)
+        return web
+    }
 
-        self.webView = web
-        self.cursorView = DisplayController.makeCursorView()
-        self.appliedAgent = startingAgent
-
-        NotificationCenter.default.addObserver(
-            self,
-            selector: #selector(screenDidDisconnect(_:)),
-            name: UIScreen.didDisconnectNotification,
-            object: nil
-        )
-
-        // History: watch the address and title instead of only page loads, so pages that change
-        // without a full load (YouTube videos, for example) are recorded too.
-        urlObservation = web.observe(\.url, options: [.new]) { webView, _ in
+    // History: watch the address and title instead of only page loads, so pages that change
+    // without a full load (YouTube videos, for example) are recorded too. Not while incognito.
+    private func attachHistoryObservers() {
+        urlObservation = nil
+        titleObservation = nil
+        urlObservation = webView.observe(\.url, options: [.new]) { [weak self] webView, _ in
+            if self?.isIncognito == true { return }
             HistoryStore.shared.record(url: webView.url, title: nil)
         }
-        titleObservation = web.observe(\.title, options: [.new]) { webView, _ in
+        titleObservation = webView.observe(\.title, options: [.new]) { [weak self] webView, _ in
+            if self?.isIncognito == true { return }
             HistoryStore.shared.record(url: webView.url, title: webView.title)
         }
+    }
+
+    // MARK: - Incognito
+
+    /// Switches between normal and private browsing by swapping in a brand new web view.
+    /// The caller puts the new web view on screen and loads a page.
+    func setIncognito(_ on: Bool) {
+        guard on != isIncognito else { return }
+        stopExternalPresentation()
+
+        let old = webView
+        let wasPrivate = isIncognito
+        isIncognito = on
+        incognitoZoomLevels.removeAll()
+
+        webView = DisplayController.buildWebView(incognito: on)
+        appliedAgent = DisplayController.standardAgent(desktop: prefersDesktopSite)
+        attachHistoryObservers()
+
+        old.stopLoading()
+        old.navigationDelegate = nil
+        old.removeFromSuperview()
+        if wasPrivate {
+            // Leaving incognito: erase everything the private session collected.
+            old.configuration.websiteDataStore.removeData(
+                ofTypes: WKWebsiteDataStore.allWebsiteDataTypes(),
+                modifiedSince: Date(timeIntervalSince1970: 0)
+            ) {}
+        }
+    }
+
+    // MARK: - Page size (zoom), remembered per website
+
+    private static let siteZoomKey = "AirBrowser.siteZoom"
+    static let zoomSteps: [CGFloat] = [0.5, 0.67, 0.75, 0.8, 0.9, 1.0, 1.1, 1.25, 1.5, 1.75, 2.0, 2.5, 3.0]
+
+    var currentZoomHost: String? { return webView.url?.host?.lowercased() }
+
+    func zoomLevel(for host: String?) -> CGFloat {
+        guard let host = host else { return 1.0 }
+        if isIncognito { return incognitoZoomLevels[host] ?? 1.0 }
+        let saved = UserDefaults.standard.dictionary(forKey: DisplayController.siteZoomKey) as? [String: Double]
+        return CGFloat(saved?[host] ?? 1.0)
+    }
+
+    var currentZoom: CGFloat { return zoomLevel(for: currentZoomHost) }
+
+    private func setZoom(_ value: CGFloat) {
+        guard let host = currentZoomHost else { return }
+        if isIncognito {
+            incognitoZoomLevels[host] = value
+        } else {
+            var all = (UserDefaults.standard.dictionary(forKey: DisplayController.siteZoomKey) as? [String: Double]) ?? [:]
+            if abs(value - 1.0) < 0.001 {
+                all.removeValue(forKey: host)
+            } else {
+                all[host] = Double(value)
+            }
+            UserDefaults.standard.set(all, forKey: DisplayController.siteZoomKey)
+        }
+        webView.pageZoom = value
+    }
+
+    func zoomIn() {
+        let now = currentZoom
+        if let next = DisplayController.zoomSteps.first(where: { $0 > now + 0.001 }) { setZoom(next) }
+    }
+
+    func zoomOut() {
+        let now = currentZoom
+        if let previous = DisplayController.zoomSteps.last(where: { $0 < now - 0.001 }) { setZoom(previous) }
+    }
+
+    func resetZoom() {
+        setZoom(1.0)
+    }
+
+    /// Call when a page starts showing: applies the size saved for that website.
+    func applyZoomForCurrentPage() {
+        let wanted = currentZoom
+        if abs(webView.pageZoom - wanted) > 0.001 { webView.pageZoom = wanted }
     }
 
     // MARK: - Site identity (desktop / mobile / YouTube TV)
