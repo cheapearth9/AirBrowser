@@ -641,6 +641,15 @@ class MainAppViewController: UIViewController, UITextFieldDelegate, WKNavigation
             self?.webView.reload()
             DispatchQueue.main.async { self?.focusCaptureIfNeeded() }
         })
+        alert.addAction(UIAlertAction(title: "Page size... (" + String(Int((DisplayController.shared.currentZoom * 100).rounded())) + "%)", style: .default) { [weak self] _ in
+            self?.showPageSize()
+        })
+        alert.addAction(UIAlertAction(
+            title: "Incognito mode: " + (DisplayController.shared.isIncognito ? "On" : "Off") + " (tap to switch)",
+            style: .default
+        ) { [weak self] _ in
+            self?.toggleIncognito()
+        })
         if YouTubeTV.isTVAddress(webView.url) {
             alert.addAction(UIAlertAction(title: "YouTube TV options...", style: .default) { [weak self] _ in
                 self?.showTVOptions()
@@ -660,6 +669,48 @@ class MainAppViewController: UIViewController, UITextFieldDelegate, WKNavigation
     }
 
     // MARK: - History, downloads and notices
+
+    // MARK: - Page size and incognito
+
+    private func showPageSize() {
+        let controller = PageSizeViewController()
+        controller.onClose = { [weak self] in
+            self?.focusCaptureIfNeeded()
+        }
+        let navigation = UINavigationController(rootViewController: controller)
+        navigation.modalPresentationStyle = .formSheet
+        present(navigation, animated: true)
+    }
+
+    /// Switches private browsing on or off. This starts a fresh browser (the current page is closed), and
+    /// leaving incognito erases everything the private session saved.
+    private func toggleIncognito() {
+        let display = DisplayController.shared
+        let turningOn = !display.isIncognito
+        let wasAirPlay = isAirPlayModeActive
+        if wasAirPlay { setAirPlayMode(false) } // bring the page back to the iPad first
+
+        display.setIncognito(turningOn)
+        webView.navigationDelegate = self
+        placeWebViewOnIPad()
+        applyIncognitoLook()
+        urlTextField.text = ""
+        if let url = URL(string: "https://www.google.com") {
+            webView.load(URLRequest(url: url))
+        }
+        showToast(turningOn ? "Incognito on: nothing is saved" : "Incognito off: private session erased")
+        updateReloadButton()
+
+        if wasAirPlay { setAirPlayMode(true) }
+    }
+
+    /// A darker toolbar while browsing privately, so you can always tell.
+    private func applyIncognitoLook() {
+        let on = DisplayController.shared.isIncognito
+        toolbar.backgroundColor = on ? UIColor(white: 0.17, alpha: 1) : .secondarySystemBackground
+        urlTextField.overrideUserInterfaceStyle = on ? .dark : .unspecified
+        urlTextField.placeholder = on ? "Incognito: enter URL or search..." : "Enter URL or search..."
+    }
 
     // MARK: - YouTube TV options
 
@@ -734,6 +785,10 @@ class MainAppViewController: UIViewController, UITextFieldDelegate, WKNavigation
     }
 
     private func showBackupMenu() {
+        if DisplayController.shared.isIncognito {
+            showToast("Backup is not available in incognito")
+            return
+        }
         let alert = UIAlertController(
             title: "Backup & Restore",
             message: "Saves your logins (Google, YouTube...), history and settings to a file in the Files app. Restore it after reinstalling. Keep the file private: it can sign in as you. Downloads are not included.",
@@ -919,6 +974,7 @@ class MainAppViewController: UIViewController, UITextFieldDelegate, WKNavigation
 
     // MARK: - WKNavigationDelegate (keeps the URL bar in sync, including swipes and back/forward)
     func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
+        DisplayController.shared.applyZoomForCurrentPage()
         if let urlString = webView.url?.absoluteString {
             urlTextField.text = urlString
         }
