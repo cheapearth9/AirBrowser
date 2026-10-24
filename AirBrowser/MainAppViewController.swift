@@ -166,6 +166,8 @@ class MainAppViewController: UIViewController, UITextFieldDelegate, WKNavigation
     private var airPlayToggleButton: UIButton!
     private var reloadButton: UIButton!
     private var autoHideButton: UIButton!
+    private var toolbarLeadingConstraint: NSLayoutConstraint?
+    private var focusObserversAdded = false
     private var keyCapture: KeyCaptureView!
 
     private var isAirPlayModeActive = false
@@ -209,9 +211,17 @@ class MainAppViewController: UIViewController, UITextFieldDelegate, WKNavigation
 
         airPlayToggleButton = createButton(title: "AirPlay: OFF", action: #selector(toggleAirPlayMode))
         airPlayToggleButton.titleLabel?.font = .systemFont(ofSize: 12, weight: .bold)
-        airPlayToggleButton.isHidden = !DisplayController.shared.isExternalDisplayAvailable
+        airPlayToggleButton.isHidden = !(DisplayController.shared.isExternalDisplayAvailable || UIScreen.screens.count > 1)
 
         let settingsButton = createButton(title: "⚙️", action: #selector(openSettings))
+
+        // Keep AirPlay and the other buttons whole when the window is narrow (Split View). The address bar gives way first.
+        airPlayToggleButton.setContentCompressionResistancePriority(.required, for: .horizontal)
+        backButton.setContentCompressionResistancePriority(.required, for: .horizontal)
+        forwardButton.setContentCompressionResistancePriority(.required, for: .horizontal)
+        settingsButton.setContentCompressionResistancePriority(.required, for: .horizontal)
+        urlTextField.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        urlTextField.setContentHuggingPriority(.defaultLow, for: .horizontal)
 
         let topStack = UIStackView(arrangedSubviews: [backButton, forwardButton, urlTextField, airPlayToggleButton, settingsButton])
         topStack.axis = .horizontal
@@ -325,6 +335,9 @@ class MainAppViewController: UIViewController, UITextFieldDelegate, WKNavigation
         }
         view.insertSubview(keyCapture, at: 0)
 
+        // Leading edge of the toolbar: moved in when the window is not full screen (see viewDidLayoutSubviews)
+        toolbarLeadingConstraint = topStack.leadingAnchor.constraint(equalTo: toolbar.leadingAnchor, constant: 12)
+
         // Constraints (the web view is placed separately, see placeWebViewOnIPad)
         NSLayoutConstraint.activate([
             toolbar.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
@@ -333,7 +346,7 @@ class MainAppViewController: UIViewController, UITextFieldDelegate, WKNavigation
             toolbar.heightAnchor.constraint(equalToConstant: 50),
 
             topStack.centerYAnchor.constraint(equalTo: toolbar.centerYAnchor),
-            topStack.leadingAnchor.constraint(equalTo: toolbar.leadingAnchor, constant: 12),
+            toolbarLeadingConstraint!,
             topStack.trailingAnchor.constraint(equalTo: toolbar.trailingAnchor, constant: -12),
 
             backButton.widthAnchor.constraint(equalToConstant: 32),
@@ -434,8 +447,21 @@ class MainAppViewController: UIViewController, UITextFieldDelegate, WKNavigation
         )
     }
 
+    override func viewDidLayoutSubviews() {
+        super.viewDidLayoutSubviews()
+        // iPadOS draws its window controls (the ••• bubble) over the top-left corner of a split or floating window,
+        // which covered Back and Forward. Move the toolbar in when the window is not full screen.
+        guard let window = view.window, let windowScene = window.windowScene else { return }
+        let windowed = window.frame.width < windowScene.coordinateSpace.bounds.width - 1
+        toolbarLeadingConstraint?.constant = windowed ? 64 : 12
+    }
+
     override func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)
+        if !focusObserversAdded {
+            focusObserversAdded = true
+            observeWindowFocus()
+        }
         updateMouseClickBlocking()
         focusCaptureIfNeeded()
     }
@@ -1047,10 +1073,29 @@ class MainAppViewController: UIViewController, UITextFieldDelegate, WKNavigation
 
     @objc private func externalDisplayAvailabilityChanged() {
         let available = DisplayController.shared.isExternalDisplayAvailable
-        airPlayToggleButton.isHidden = !available
-        if !available && isAirPlayModeActive {
+        // Keep the button while a monitor is still connected, even if the browser's monitor scene is briefly
+        // reported as gone (this can happen when another app takes focus in Split View).
+        airPlayToggleButton.isHidden = !(available || UIScreen.screens.count > 1)
+        if !available && UIScreen.screens.count <= 1 && isAirPlayModeActive {
             // Monitor unplugged while ON: bring the browser back to the iPad.
             setAirPlayMode(false)
+        }
+    }
+
+    /// Split View / Stage Manager: this window is only the key one while it has focus. Track that, so typing
+    /// goes to the page on the monitor when another app is focused, and the window takes keys back when focused.
+    private func observeWindowFocus() {
+        NotificationCenter.default.addObserver(self, selector: #selector(windowFocusChanged(_:)), name: UIWindow.didBecomeKeyNotification, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(windowFocusChanged(_:)), name: UIWindow.didResignKeyNotification, object: nil)
+    }
+
+    @objc private func windowFocusChanged(_ notification: Notification) {
+        guard let window = notification.object as? UIWindow, window === view.window else { return }
+        let focused = notification.name == UIWindow.didBecomeKeyNotification
+        DisplayController.shared.mainWindowIsKey = focused
+        if focused {
+            updateMouseClickBlocking()
+            focusCaptureIfNeeded()
         }
     }
 
