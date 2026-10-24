@@ -527,6 +527,15 @@ final class DisplayController: ObservableObject {
     private static let siteZoomKey = "AirBrowser.siteZoom"
     static let zoomSteps: [CGFloat] = [0.5, 0.67, 0.75, 0.8, 0.9, 1.0, 1.1, 1.25, 1.5, 1.75, 2.0, 2.5, 3.0]
 
+    /// On this iPad, WebKit's page zoom works backwards: a bigger number made pages smaller. So the number given
+    /// to WebKit is flipped (1.25 is handed over as 0.8). If sizes ever go the wrong way again, change this to false.
+    private static let invertPageZoom = true
+
+    /// What to hand to WebKit for a size the user chose.
+    private static func webKitZoom(for chosen: CGFloat) -> CGFloat {
+        return invertPageZoom ? (1.0 / chosen) : chosen
+    }
+
     var currentZoomHost: String? { return webView.url?.host?.lowercased() }
 
     func zoomLevel(for host: String?) -> CGFloat {
@@ -551,7 +560,7 @@ final class DisplayController: ObservableObject {
             }
             UserDefaults.standard.set(all, forKey: DisplayController.siteZoomKey)
         }
-        webView.pageZoom = value
+        webView.pageZoom = DisplayController.webKitZoom(for: value)
     }
 
     func zoomIn() {
@@ -570,7 +579,7 @@ final class DisplayController: ObservableObject {
 
     /// Call when a page starts showing: applies the size saved for that website.
     func applyZoomForCurrentPage() {
-        let wanted = currentZoom
+        let wanted = DisplayController.webKitZoom(for: currentZoom)
         if abs(webView.pageZoom - wanted) > 0.001 { webView.pageZoom = wanted }
     }
 
