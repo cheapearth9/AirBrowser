@@ -397,6 +397,9 @@ final class DisplayController: ObservableObject {
     private var appliedAgent: String?
     private var lastCursorActivity = Date()
     private var cursorWatchTimer: Timer?
+    /// False while another app is focused (Split View / Stage Manager). Keyboard keys are then read here.
+    var mainWindowIsKey = true
+    private var shiftHeld = false
     /// Press-and-slide (highlighting). A press that never moves is a click.
     private var pointerIsDown = false
     private var pointerDragged = false
@@ -797,6 +800,7 @@ final class DisplayController: ObservableObject {
 
         startMouseCapture()
         startCursorWatch()
+        startKeyboardForwarding()
         nudgeLayout()
 
         // Short notice so it is obvious what the monitor is running at.
@@ -847,6 +851,7 @@ final class DisplayController: ObservableObject {
 
         stopMouseCapture()
         stopCursorWatch()
+        stopKeyboardForwarding()
 
         webView.removeFromSuperview()
         cursorView.removeFromSuperview()
@@ -885,6 +890,98 @@ final class DisplayController: ObservableObject {
         cursorActivity()
 
         if pointerIsDown { pointerDragUpdate() }
+    }
+
+    // MARK: - Keyboard while another app is focused (Split View / Stage Manager)
+
+    private static let letterForKey: [GCKeyCode: String] = [
+        .keyA: "a",
+        .keyB: "b",
+        .keyC: "c",
+        .keyD: "d",
+        .keyE: "e",
+        .keyF: "f",
+        .keyG: "g",
+        .keyH: "h",
+        .keyI: "i",
+        .keyJ: "j",
+        .keyK: "k",
+        .keyL: "l",
+        .keyM: "m",
+        .keyN: "n",
+        .keyO: "o",
+        .keyP: "p",
+        .keyQ: "q",
+        .keyR: "r",
+        .keyS: "s",
+        .keyT: "t",
+        .keyU: "u",
+        .keyV: "v",
+        .keyW: "w",
+        .keyX: "x",
+        .keyY: "y",
+        .keyZ: "z"
+    ]
+
+    private static let digitForKey: [GCKeyCode: String] = [
+        .one: "1",
+        .two: "2",
+        .three: "3",
+        .four: "4",
+        .five: "5",
+        .six: "6",
+        .seven: "7",
+        .eight: "8",
+        .nine: "9",
+        .zero: "0"
+    ]
+
+    /// Hardware keys go to the focused app only. When AirBrowser is in the background (another app has focus),
+    /// its own key handling does not run, so the keyboard is read here and typed into the page on the monitor.
+    /// While AirBrowser is focused this does nothing, so a key is never typed twice.
+    private func startKeyboardForwarding() {
+        GCKeyboard.coalesced?.keyboardInput?.keyChangedHandler = { [weak self] _, _, keyCode, pressed in
+            DispatchQueue.main.async {
+                self?.forwardHardwareKey(keyCode, pressed: pressed)
+            }
+        }
+    }
+
+    private func stopKeyboardForwarding() {
+        GCKeyboard.coalesced?.keyboardInput?.keyChangedHandler = nil
+        shiftHeld = false
+    }
+
+    private func forwardHardwareKey(_ keyCode: GCKeyCode, pressed: Bool) {
+        if keyCode == .leftShift || keyCode == .rightShift {
+            shiftHeld = pressed
+            return
+        }
+        guard isExternalConnected, !mainWindowIsKey, pressed else { return }
+
+        if let letter = DisplayController.letterForKey[keyCode] {
+            typeText(shiftHeld ? letter.uppercased() : letter)
+        } else if let digit = DisplayController.digitForKey[keyCode] {
+            typeText(digit)
+        } else if keyCode == .spacebar {
+            typeText(" ")
+        } else if keyCode == .returnOrEnter {
+            pressKey("Enter", code: "Enter", keyCode: 13)
+        } else if keyCode == .deleteOrBackspace {
+            pressBackspace()
+        } else if keyCode == .tab {
+            pressKey("Tab", code: "Tab", keyCode: 9)
+        } else if keyCode == .escape {
+            pressKey("Escape", code: "Escape", keyCode: 27)
+        } else if keyCode == .upArrow {
+            pressKey("ArrowUp", code: "ArrowUp", keyCode: 38)
+        } else if keyCode == .downArrow {
+            pressKey("ArrowDown", code: "ArrowDown", keyCode: 40)
+        } else if keyCode == .leftArrow {
+            pressKey("ArrowLeft", code: "ArrowLeft", keyCode: 37)
+        } else if keyCode == .rightArrow {
+            pressKey("ArrowRight", code: "ArrowRight", keyCode: 39)
+        }
     }
 
     // MARK: - Hide the cursor when it has not moved for a while
