@@ -151,7 +151,7 @@ final class KeyCaptureView: UIView, UIKeyInput {
 }
 
 // MARK: - Main iPad screen
-class MainAppViewController: UIViewController, UITextFieldDelegate, WKNavigationDelegate {
+class MainAppViewController: UIViewController, UITextFieldDelegate, WKNavigationDelegate, UIPointerInteractionDelegate {
 
     /// The one shared web view (owned by DisplayController). It sits on the iPad normally
     /// and moves to the monitor while AirPlay mode is ON.
@@ -172,6 +172,10 @@ class MainAppViewController: UIViewController, UITextFieldDelegate, WKNavigation
 
     private var isAirPlayModeActive = false
     private var isSoftKeyboardShown = false
+    private var lastWindowed: Bool?
+    private var shownPointerNotice = false
+    private var pointerHider: UIPointerInteraction?
+    private var webViewConstraints: [NSLayoutConstraint] = []
 
     // While AirPlay mode is ON the iPad pointer is locked, so a physical mouse drives the monitor instead.
     override var prefersPointerLocked: Bool { isAirPlayModeActive }
@@ -410,6 +414,13 @@ class MainAppViewController: UIViewController, UITextFieldDelegate, WKNavigation
         }
 
         setupGestures()
+        setupPointerHandling()
+
+        // Website questions (location, camera, JavaScript alerts) are shown here on the iPad, not on the monitor.
+        PermissionBridge.shared.presenter = self
+        PermissionBridge.shared.onDialogFinished = { [weak self] in
+            DispatchQueue.main.async { self?.focusCaptureIfNeeded() }
+        }
 
         // 4. Shared web view
         webView.navigationDelegate = self
@@ -445,6 +456,24 @@ class MainAppViewController: UIViewController, UITextFieldDelegate, WKNavigation
             name: DownloadManager.message,
             object: nil
         )
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(sceneActivationChanged),
+            name: UIScene.didActivateNotification,
+            object: nil
+        )
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(pointerLockChanged),
+            name: UIPointerLockState.didChangeNotification,
+            object: nil
+        )
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(webViewNeedsPlacement),
+            name: .webViewNeedsPlacement,
+            object: nil
+        )
     }
 
     override func viewDidLayoutSubviews() {
@@ -454,6 +483,12 @@ class MainAppViewController: UIViewController, UITextFieldDelegate, WKNavigation
         guard let window = view.window, let windowScene = window.windowScene else { return }
         let windowed = window.frame.width < windowScene.coordinateSpace.bounds.width - 1
         toolbarLeadingConstraint?.constant = windowed ? 64 : 12
+
+        // Entering or leaving Split View decides whether the iPad pointer can be locked.
+        if lastWindowed != windowed {
+            lastWindowed = windowed
+            refreshPointerLock()
+        }
     }
 
     override func viewDidAppear(_ animated: Bool) {
@@ -464,6 +499,8 @@ class MainAppViewController: UIViewController, UITextFieldDelegate, WKNavigation
         }
         updateMouseClickBlocking()
         focusCaptureIfNeeded()
+        resumeAirPlayIfWanted()
+        refreshPointerLock()
     }
 
     private func createButton(title: String, action: Selector) -> UIButton {
@@ -714,7 +751,7 @@ class MainAppViewController: UIViewController, UITextFieldDelegate, WKNavigation
         let display = DisplayController.shared
         let turningOn = !display.isIncognito
         let wasAirPlay = isAirPlayModeActive
-        if wasAirPlay { setAirPlayMode(false) } // bring the page back to the iPad first
+        if wasAirPlay { setAirPlayMode(false, remember: false) } // bring the page back to the iPad first
 
         display.setIncognito(turningOn)
         webView.navigationDelegate = self
@@ -727,7 +764,7 @@ class MainAppViewController: UIViewController, UITextFieldDelegate, WKNavigation
         showToast(turningOn ? "Incognito on: nothing is saved" : "Incognito off: private session erased")
         updateReloadButton()
 
-        if wasAirPlay { setAirPlayMode(true) }
+        if wasAirPlay { setAirPlayMode(true, remember: false) }
     }
 
     /// A darker toolbar while browsing privately, so you can always tell.
@@ -868,7 +905,7 @@ class MainAppViewController: UIViewController, UITextFieldDelegate, WKNavigation
         label.text = text
         label.textColor = .white
         label.font = .systemFont(ofSize: 14, weight: .medium)
-        label.numberOfLines = 2
+        label.numberOfLines = 0
         label.textAlignment = .center
 
         let pill = UIView()
@@ -1001,6 +1038,7 @@ class MainAppViewController: UIViewController, UITextFieldDelegate, WKNavigation
     // MARK: - WKNavigationDelegate (keeps the URL bar in sync, including swipes and back/forward)
     func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
         DisplayController.shared.applyZoomForCurrentPage()
+        DisplayController.shared.syncFullscreenMode()
         if let urlString = webView.url?.absoluteString {
             urlTextField.text = urlString
         }
@@ -1036,7 +1074,9 @@ class MainAppViewController: UIViewController, UITextFieldDelegate, WKNavigation
         setAirPlayMode(!isAirPlayModeActive)
     }
 
-    private func setAirPlayMode(_ on: Bool) {
+    /// `remember` is true when the person chose this (button), false when the app does it by itself
+    /// (the monitor went away or came back). Only a real choice changes what is brought back next time.
+    private func setAirPlayMode(_ on: Bool, remember: Bool = true) {
         stopArrowRepeat()
         let display = DisplayController.shared
 
@@ -1046,6 +1086,7 @@ class MainAppViewController: UIViewController, UITextFieldDelegate, WKNavigation
             trackpadContainer.isHidden = false
             setSoftKeyboardShown(false)
             _ = keyCapture.becomeFirstResponder()
+            if remember { display.airPlayWanted = true }
         } else {
             // Put the browser back on the iPad. With nothing on the monitor, it mirrors the iPad again.
             isAirPlayModeActive = false
@@ -1054,11 +1095,22 @@ class MainAppViewController: UIViewController, UITextFieldDelegate, WKNavigation
             display.stopExternalPresentation()
             placeWebViewOnIPad()
             trackpadContainer.isHidden = true
+            if remember && !on { display.airPlayWanted = false }
         }
 
         updateAirPlayButton()
         updateMouseClickBlocking()
-        setNeedsUpdateOfPrefersPointerLocked()
+        pointerHider?.invalidate()
+        refreshPointerLock()
+    }
+
+    /// Brings AirPlay mode back by itself if it was ON before: after the app was closed and opened again,
+    /// after the monitor was unplugged and plugged in, or after another app (Split View) had the monitor.
+    private func resumeAirPlayIfWanted() {
+        let display = DisplayController.shared
+        guard display.airPlayWanted, !isAirPlayModeActive, display.isExternalDisplayAvailable, view.window != nil else { return }
+        setAirPlayMode(true, remember: false)
+        if isAirPlayModeActive { showToast("AirPlay resumed") }
     }
 
     /// While AirPlay mode is ON, mouse clicks must only reach the monitor, never an iPad button.
@@ -1074,11 +1126,18 @@ class MainAppViewController: UIViewController, UITextFieldDelegate, WKNavigation
     @objc private func externalDisplayAvailabilityChanged() {
         let available = DisplayController.shared.isExternalDisplayAvailable
         // Keep the button while a monitor is still connected, even if the browser's monitor scene is briefly
-        // reported as gone (this can happen when another app takes focus in Split View).
+        // reported as gone (this happens when another app takes focus in Split View).
         airPlayToggleButton.isHidden = !(available || UIScreen.screens.count > 1)
-        if !available && UIScreen.screens.count <= 1 && isAirPlayModeActive {
-            // Monitor unplugged while ON: bring the browser back to the iPad.
-            setAirPlayMode(false)
+
+        if available {
+            resumeAirPlayIfWanted()
+        } else if isAirPlayModeActive {
+            // The monitor scene went away. Put the page back on the iPad so it is never lost. "AirPlay wanted" is kept,
+            // so the page moves back to the monitor by itself as soon as iPadOS hands the monitor over again.
+            setAirPlayMode(false, remember: false)
+            showToast(UIScreen.screens.count > 1
+                ? "iPadOS took the monitor back (another app has focus). AirPlay resumes when AirBrowser is focused again."
+                : "Monitor disconnected. AirPlay resumes when it is plugged in again.")
         }
     }
 
@@ -1096,11 +1155,80 @@ class MainAppViewController: UIViewController, UITextFieldDelegate, WKNavigation
         if focused {
             updateMouseClickBlocking()
             focusCaptureIfNeeded()
+            resumeAirPlayIfWanted()
         }
+        refreshPointerLock()
     }
 
     @objc private func appDidBecomeActive() {
         focusCaptureIfNeeded()
+        resumeAirPlayIfWanted()
+        refreshPointerLock()
+    }
+
+    @objc private func sceneActivationChanged() {
+        refreshPointerLock()
+    }
+
+    @objc private func pointerLockChanged() {
+        refreshPointerMode(announce: false)
+    }
+
+    @objc private func webViewNeedsPlacement() {
+        guard !isAirPlayModeActive else { return }
+        placeWebViewOnIPad()
+    }
+
+    // MARK: - External mouse: pointer lock, and what to do when iPadOS will not lock it
+
+    private func setupPointerHandling() {
+        // Where the mouse points inside this window (used only while the pointer cannot be locked).
+        let hover = UIHoverGestureRecognizer(target: self, action: #selector(handleHover(_:)))
+        view.addGestureRecognizer(hover)
+
+        // Hides the iPad's own gray pointer while AirPlay mode is ON. The monitor has its own cursor.
+        let hider = UIPointerInteraction(delegate: self)
+        view.addInteraction(hider)
+        pointerHider = hider
+    }
+
+    func pointerInteraction(_ interaction: UIPointerInteraction, styleFor region: UIPointerRegion) -> UIPointerStyle? {
+        return isAirPlayModeActive ? UIPointerStyle.hidden() : nil
+    }
+
+    @objc private func handleHover(_ gesture: UIHoverGestureRecognizer) {
+        guard isAirPlayModeActive, DisplayController.shared.usesAbsolutePointer else { return }
+        guard gesture.state == .began || gesture.state == .changed else { return }
+        let size = view.bounds.size
+        guard size.width > 0, size.height > 0 else { return }
+        let point = gesture.location(in: view)
+        DisplayController.shared.placeCursor(fractionX: point.x / size.width, fractionY: point.y / size.height)
+    }
+
+    /// iPadOS only locks the iPad pointer while this scene is full screen, active and focused. Ask it to look again
+    /// whenever one of those could have changed, then decide how the monitor cursor is driven.
+    private func refreshPointerLock() {
+        setNeedsUpdateOfPrefersPointerLocked()
+        refreshPointerMode(announce: false)
+        for delay in [0.4, 1.2] {
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+                self?.setNeedsUpdateOfPrefersPointerLocked()
+                self?.refreshPointerMode(announce: delay > 1)
+            }
+        }
+    }
+
+    /// Pointer locked: the mouse's movement drives the monitor cursor (no edges).
+    /// Not locked: the iPad pointer's position inside this window drives it (the top of the window is the top of the monitor).
+    private func refreshPointerMode(announce: Bool) {
+        let display = DisplayController.shared
+        let locked = view.window?.windowScene?.pointerLockState?.isLocked ?? false
+        display.usesAbsolutePointer = isAirPlayModeActive && !locked
+
+        if announce, display.usesAbsolutePointer, !shownPointerNotice, view.window != nil {
+            shownPointerNotice = true
+            showToast("iPadOS can't lock the mouse in Split View or while another app is focused, so the monitor cursor follows where the mouse points in this window. Full screen gives normal mouse movement.")
+        }
     }
 
     // MARK: - Keyboard
@@ -1132,17 +1260,22 @@ class MainAppViewController: UIViewController, UITextFieldDelegate, WKNavigation
 
     private func placeWebViewOnIPad() {
         let webView = self.webView
-        guard webView.superview !== view else { return }
+        // Already in place with its layout rules intact: nothing to do.
+        if webView.superview === view, !webViewConstraints.isEmpty, webViewConstraints.allSatisfy({ $0.isActive }) { return }
 
-        webView.removeFromSuperview()
+        NSLayoutConstraint.deactivate(webViewConstraints)
+        if webView.superview !== view {
+            webView.removeFromSuperview()
+            view.insertSubview(webView, belowSubview: trackpadContainer)
+        }
         webView.translatesAutoresizingMaskIntoConstraints = false
-        view.insertSubview(webView, belowSubview: trackpadContainer)
 
-        NSLayoutConstraint.activate([
+        webViewConstraints = [
             webView.topAnchor.constraint(equalTo: toolbar.bottomAnchor),
             webView.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor),
             webView.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor),
             webView.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor)
-        ])
+        ]
+        NSLayoutConstraint.activate(webViewConstraints)
     }
 }
