@@ -6,6 +6,8 @@ import GameController
 extension Notification.Name {
     /// Posted whenever a monitor's external-display scene connects or disconnects.
     static let externalDisplayAvailabilityChanged = Notification.Name("AirBrowser.externalDisplayAvailabilityChanged")
+    /// Posted when the page left full screen and the web view may need putting back on the iPad.
+    static let webViewNeedsPlacement = Notification.Name("AirBrowser.webViewNeedsPlacement")
 }
 
 // MARK: - Tunables (change these if a physical mouse feels off)
@@ -370,6 +372,118 @@ private let keyBridgeScript = #"""
 })();
 """#
 
+// MARK: - Full screen on the monitor
+/// A page's own full-screen button (YouTube's) normally asks WebKit for a separate full-screen window. That window can
+/// open on the iPad's screen instead of the monitor. While AirPlay mode is ON the web view already fills the whole
+/// monitor, so full screen is done inside the page instead: the element is stretched over the entire page, and the page
+/// is told (fullscreenchange, document.fullscreenElement...) exactly as if it were real full screen.
+/// On the iPad (AirPlay OFF) the normal WebKit full screen is used.
+private let fullscreenScript = #"""
+(function () {
+  if (window.__abFS) { return; }
+
+  var ElementProto = Element.prototype;
+  var DocProto = Document.prototype;
+  var nativeRequest = ElementProto.requestFullscreen || ElementProto.webkitRequestFullscreen || ElementProto.webkitRequestFullScreen;
+  var nativeExit = DocProto.exitFullscreen || DocProto.webkitExitFullscreen || DocProto.webkitCancelFullScreen;
+  var external = false;
+  var current = null;
+  var styleTag = null;
+
+  var FILL = 'position:fixed!important;top:0!important;left:0!important;right:0!important;bottom:0!important;' +
+    'width:100vw!important;height:100vh!important;max-width:none!important;max-height:none!important;' +
+    'margin:0!important;padding:0!important;background:#000!important;z-index:2147483647!important;transform:none!important;';
+
+  function ensureStyle() {
+    if (styleTag && styleTag.isConnected) { return; }
+    styleTag = document.createElement('style');
+    styleTag.textContent = '[data-ab-fullscreen]{' + FILL + '}';
+    (document.head || document.documentElement).appendChild(styleTag);
+  }
+
+  function announce(el) {
+    var target = (el && el.isConnected) ? el : document;
+    target.dispatchEvent(new Event('fullscreenchange', { bubbles: true, composed: true }));
+    target.dispatchEvent(new Event('webkitfullscreenchange', { bubbles: true, composed: true }));
+    setTimeout(function () { window.dispatchEvent(new Event('resize')); }, 0);
+  }
+
+  function enter(el) {
+    if (current === el) { return; }
+    if (current) { current.removeAttribute('data-ab-fullscreen'); }
+    ensureStyle();
+    current = el;
+    el.setAttribute('data-ab-fullscreen', '');
+    announce(el);
+  }
+
+  function leave() {
+    var el = current;
+    if (!el) { return; }
+    current = null;
+    el.removeAttribute('data-ab-fullscreen');
+    announce(el);
+  }
+
+  function request() {
+    if (external) { enter(this); return Promise.resolve(); }
+    if (nativeRequest) { return nativeRequest.apply(this, arguments); }
+    return Promise.reject(new TypeError('Fullscreen is not available'));
+  }
+
+  function exit() {
+    if (current) { leave(); return Promise.resolve(); }
+    if (nativeExit) { return nativeExit.apply(document, arguments); }
+    return Promise.resolve();
+  }
+
+  ['requestFullscreen', 'webkitRequestFullscreen', 'webkitRequestFullScreen'].forEach(function (name) {
+    try { Object.defineProperty(ElementProto, name, { value: request, configurable: true, writable: true }); } catch (e) {}
+  });
+  ['exitFullscreen', 'webkitExitFullscreen', 'webkitCancelFullScreen'].forEach(function (name) {
+    try { Object.defineProperty(DocProto, name, { value: exit, configurable: true, writable: true }); } catch (e) {}
+  });
+
+  function patchGetter(names, make) {
+    names.forEach(function (name) {
+      var original = null;
+      try {
+        var d = Object.getOwnPropertyDescriptor(DocProto, name);
+        original = d && d.get;
+      } catch (e) {}
+      try {
+        Object.defineProperty(DocProto, name, {
+          configurable: true,
+          get: function () { return make(original ? original.call(this) : undefined); }
+        });
+      } catch (e) {}
+    });
+  }
+  patchGetter(['fullscreenElement', 'webkitFullscreenElement', 'webkitCurrentFullScreenElement'], function (v) {
+    return current || (v === undefined ? null : v);
+  });
+  patchGetter(['fullscreenEnabled', 'webkitFullscreenEnabled'], function (v) {
+    return external ? true : !!v;
+  });
+  patchGetter(['webkitIsFullScreen', 'fullscreen'], function (v) {
+    return current ? true : !!v;
+  });
+
+  // Esc leaves full screen, like a real browser.
+  document.addEventListener('keydown', function (e) {
+    if (current && e.key === 'Escape') { leave(); }
+  }, true);
+
+  window.__abFS = {
+    setExternal: function (on) {
+      external = !!on;
+      if (!external) { leave(); }
+    },
+    exit: function () { leave(); }
+  };
+})();
+"""#
+
 /// Owns the ONE shared web view and decides where it is shown:
 ///  - on the iPad (default), or
 ///  - fullscreen on the monitor (AirPlay mode ON).
@@ -393,12 +507,17 @@ final class DisplayController: ObservableObject {
     @Published var cursorPosition: CGPoint = .zero
 
     private weak var externalScene: UIWindowScene?
+    private weak var externalController: ExternalBrowserViewController?
     /// The user agent we last gave the web view (reading it back from the web view is not reliable).
     private var appliedAgent: String?
     private var lastCursorActivity = Date()
     private var cursorWatchTimer: Timer?
     /// False while another app is focused (Split View / Stage Manager). Keyboard keys are then read here.
     var mainWindowIsKey = true
+    /// True while the iPad pointer could not be locked (Split View, Slide Over, or the window is not focused).
+    /// The pointer then keeps moving on the iPad and stops at the screen edge, so the monitor cursor follows
+    /// WHERE the mouse points inside the AirBrowser window instead of how far it moved.
+    var usesAbsolutePointer = false
     private var shiftHeld = false
     /// Press-and-slide (highlighting). A press that never moves is a click.
     private var pointerIsDown = false
@@ -409,6 +528,7 @@ final class DisplayController: ObservableObject {
     private var mouseObserver: NSObjectProtocol?
     private var urlObservation: NSKeyValueObservation?
     private var titleObservation: NSKeyValueObservation?
+    private var fullscreenObservation: NSKeyValueObservation?
 
     private init() {
         let startingAgent = DisplayController.standardAgent(desktop: DisplayController.loadPrefersDesktopSite())
@@ -437,11 +557,19 @@ final class DisplayController: ObservableObject {
         config.allowsInlineMediaPlayback = true
         config.mediaTypesRequiringUserActionForPlayback = []
 
+        // Lets a page's own full-screen button work (youtube.com, videos). A web view blocks this unless it is switched on.
+        config.preferences.isElementFullscreenEnabled = true
+
         YouTubeAdBlocker.apply(to: config)
 
         // Lets the keyboard (iPad or hardware) type into the page that is shown on the monitor.
         config.userContentController.addUserScript(
             WKUserScript(source: keyBridgeScript, injectionTime: .atDocumentStart, forMainFrameOnly: true)
+        )
+
+        // Full screen that works on the monitor (see fullscreenScript).
+        config.userContentController.addUserScript(
+            WKUserScript(source: fullscreenScript, injectionTime: .atDocumentStart, forMainFrameOnly: true)
         )
 
         // Ad blocking for YouTube's TV interface (youtube.com/tv). Does nothing on other pages.
@@ -467,12 +595,20 @@ final class DisplayController: ObservableObject {
         // Lets the right-click menu in the page ask the iPad to copy text.
         config.userContentController.add(PageMessageHandler(), name: "airbrowser")
 
+        // Location questions are answered on the iPad's screen (see PermissionBridge), never on the monitor.
+        config.userContentController.addUserScript(
+            WKUserScript(source: PermissionBridge.geolocationScript, injectionTime: .atDocumentStart, forMainFrameOnly: false)
+        )
+        config.userContentController.addScriptMessageHandler(PermissionBridge.shared, contentWorld: .page, name: "airbrowserGeo")
+
         let startsDesktop = DisplayController.loadPrefersDesktopSite()
         config.defaultWebpagePreferences.preferredContentMode = startsDesktop ? .desktop : .mobile
 
         let web = WKWebView(frame: .zero, configuration: config)
         web.translatesAutoresizingMaskIntoConstraints = false
         web.allowsBackForwardNavigationGestures = true
+        // Camera / microphone questions and JavaScript alerts also go to the iPad's screen.
+        web.uiDelegate = PermissionBridge.shared
         // The page must fill the whole view, with no extra space reserved for safe areas.
         web.scrollView.contentInsetAdjustmentBehavior = .never
 
@@ -486,6 +622,10 @@ final class DisplayController: ObservableObject {
     private func attachHistoryObservers() {
         urlObservation = nil
         titleObservation = nil
+        fullscreenObservation = nil
+        fullscreenObservation = webView.observe(\.fullscreenState, options: [.new]) { [weak self] _, _ in
+            self?.webViewFullscreenChanged()
+        }
         urlObservation = webView.observe(\.url, options: [.new]) { [weak self] webView, _ in
             if self?.isIncognito == true { return }
             HistoryStore.shared.record(url: webView.url, title: nil)
@@ -493,6 +633,41 @@ final class DisplayController: ObservableObject {
         titleObservation = webView.observe(\.title, options: [.new]) { [weak self] webView, _ in
             if self?.isIncognito == true { return }
             HistoryStore.shared.record(url: webView.url, title: webView.title)
+        }
+    }
+
+    // MARK: - AirPlay mode is remembered
+
+    private static let airPlayWantedKey = "AirBrowser.airPlayWanted"
+
+    /// True when AirPlay mode was ON the last time the person chose. It is switched back on by itself when the app
+    /// starts again, when the monitor is plugged in again, or when AirBrowser is focused again after another app had it.
+    var airPlayWanted: Bool {
+        get { return UserDefaults.standard.bool(forKey: DisplayController.airPlayWantedKey) }
+        set { UserDefaults.standard.set(newValue, forKey: DisplayController.airPlayWantedKey) }
+    }
+
+    // MARK: - Full screen mode
+
+    /// Tells the page whether to do full screen itself (monitor) or use WebKit's (iPad). Call after the monitor
+    /// is switched on or off, and again whenever a new page starts (see MainAppViewController.didCommit).
+    func syncFullscreenMode() {
+        webView.evaluateJavaScript("window.__abFS && window.__abFS.setExternal(\(isExternalConnected ? "true" : "false"));")
+    }
+
+    // MARK: - Leaving full screen
+
+    /// When a page leaves full screen WebKit puts the web view back where it was. If that lost the layout rules
+    /// (so the page would be the wrong size), pin it again.
+    private func webViewFullscreenChanged() {
+        guard webView.fullscreenState == .notInFullscreen else { return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in
+            guard let self = self else { return }
+            if self.isExternalConnected {
+                self.externalController?.pinWebView()
+            } else {
+                NotificationCenter.default.post(name: .webViewNeedsPlacement, object: nil)
+            }
         }
     }
 
@@ -787,6 +962,7 @@ final class DisplayController: ObservableObject {
         // The view controller pulls the web view and cursor out of the iPad UI and pins them fullscreen.
         let controller = ExternalBrowserViewController(webView: webView, cursorView: cursorView)
         controller.loadViewIfNeeded()
+        externalController = controller
 
         // A window created from the scene gets the monitor's exact size.
         let window = UIWindow(windowScene: scene)
@@ -802,6 +978,7 @@ final class DisplayController: ObservableObject {
         startCursorWatch()
         startKeyboardForwarding()
         nudgeLayout()
+        syncFullscreenMode()
 
         // Short notice so it is obvious what the monitor is running at.
         let size = scene.screen.currentMode?.size ?? window.bounds.size
@@ -861,8 +1038,11 @@ final class DisplayController: ObservableObject {
         externalScene?.screen.overscanCompensation = UIScreen.OverscanCompensation.scale
 
         externalWindow = nil
+        externalController = nil
         isExternalConnected = false
+        usesAbsolutePointer = false
         nudgeLayout()
+        syncFullscreenMode()
     }
 
     // Kept so older call sites still compile; the monitor is now driven by its scene.
@@ -886,6 +1066,21 @@ final class DisplayController: ObservableObject {
         newY = max(0, min(window.bounds.height, newY))
 
         cursorPosition = CGPoint(x: newX, y: newY)
+        cursorView.center = cursorPosition
+        cursorActivity()
+
+        if pointerIsDown { pointerDragUpdate() }
+    }
+
+    /// Puts the monitor cursor where the mouse points inside the AirBrowser window, as a fraction (0...1) of the
+    /// window. Used when the iPad pointer cannot be locked. There is no "ceiling": the top of the window is the top
+    /// of the monitor.
+    func placeCursor(fractionX: CGFloat, fractionY: CGFloat) {
+        guard let window = externalWindow else { return }
+
+        let x = max(0, min(1, fractionX)) * window.bounds.width
+        let y = max(0, min(1, fractionY)) * window.bounds.height
+        cursorPosition = CGPoint(x: x, y: y)
         cursorView.center = cursorPosition
         cursorActivity()
 
@@ -1190,7 +1385,9 @@ final class DisplayController: ObservableObject {
 
         input.mouseMovedHandler = { [weak self] _, dx, dy in
             DispatchQueue.main.async {
-                self?.moveCursor(deltaX: CGFloat(dx), deltaY: CGFloat(dy) * mouseVerticalSign, speed: mouseSpeed)
+                // When the iPad pointer is not locked, its position drives the cursor instead (see placeCursor).
+                guard let self = self, !self.usesAbsolutePointer else { return }
+                self.moveCursor(deltaX: CGFloat(dx), deltaY: CGFloat(dy) * mouseVerticalSign, speed: mouseSpeed)
             }
         }
         input.leftButton.pressedChangedHandler = { [weak self] _, _, pressed in
