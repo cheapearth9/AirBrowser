@@ -150,6 +150,55 @@ final class KeyCaptureView: UIView, UIKeyInput {
     }
 }
 
+// MARK: - Small helper views
+
+/// A view that tells its owner every time it has been laid out (used to keep the split handle on the touchpad).
+final class LayoutCallbackView: UIView {
+    var onLayout: (() -> Void)?
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        onLayout?()
+    }
+}
+
+/// The bar that decides how wide each of the two pages is. A thin line with a square (not round) grip.
+/// Only the grip reacts to touches, so the buttons under the line keep working.
+final class SplitHandleView: UIView {
+    private let line = UIView()
+    private let grip = UIView()
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        backgroundColor = .clear
+
+        line.backgroundColor = UIColor.systemGray3
+        line.isUserInteractionEnabled = false
+        addSubview(line)
+
+        grip.backgroundColor = UIColor.systemGray
+        grip.layer.cornerRadius = 3
+        grip.layer.borderWidth = 2
+        grip.layer.borderColor = UIColor.systemBackground.cgColor
+        grip.isUserInteractionEnabled = false
+        addSubview(grip)
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        line.frame = CGRect(x: bounds.midX - 1.5, y: 0, width: 3, height: bounds.height)
+        grip.frame = CGRect(x: bounds.midX - 9, y: bounds.midY - 36, width: 18, height: 72)
+    }
+
+    override func point(inside point: CGPoint, with event: UIEvent?) -> Bool {
+        return grip.frame.insetBy(dx: -18, dy: -18).contains(point)
+    }
+}
+
 // MARK: - Main iPad screen
 class MainAppViewController: UIViewController, UITextFieldDelegate, WKNavigationDelegate, UIPointerInteractionDelegate {
 
@@ -158,6 +207,8 @@ class MainAppViewController: UIViewController, UITextFieldDelegate, WKNavigation
     private var webView: WKWebView { DisplayController.shared.webView }
 
     var urlTextField: UITextField!
+    /// The address bar of the second page (only shown while two pages are open).
+    var urlTextField2: UITextField!
 
     private var toolbar: UIView!
     private var trackpadContainer: UIView!
@@ -165,6 +216,11 @@ class MainAppViewController: UIViewController, UITextFieldDelegate, WKNavigation
     private var keyboardTriggerButton: UIButton!
     private var airPlayToggleButton: UIButton!
     private var reloadButton: UIButton!
+    private var reloadButton2: UIButton!
+    /// Right-hand column in AirPlay mode: the "Add a second session" button.
+    private var sessionPanel: UIView!
+    private var addSessionButton: UIButton!
+    private var splitHandle: SplitHandleView!
     private var autoHideButton: UIButton!
     private var toolbarLeadingConstraint: NSLayoutConstraint?
     private var focusObserversAdded = false
@@ -193,25 +249,20 @@ class MainAppViewController: UIViewController, UITextFieldDelegate, WKNavigation
         let backButton = createButton(title: "◄", action: #selector(goBack))
         let forwardButton = createButton(title: "►", action: #selector(goForward))
 
-        urlTextField = UITextField()
-        urlTextField.translatesAutoresizingMaskIntoConstraints = false
-        urlTextField.borderStyle = .roundedRect
-        urlTextField.placeholder = "Enter URL or search..."
-        urlTextField.font = .systemFont(ofSize: 14)
-        urlTextField.returnKeyType = .go
-        urlTextField.clearButtonMode = .whileEditing
-        urlTextField.autocorrectionType = .no
-        urlTextField.autocapitalizationType = .none
-        urlTextField.keyboardType = .webSearch
-        urlTextField.delegate = self
-
         // Refresh button inside the bar, on the right. While you type, the X (clear) button takes its place.
         reloadButton = UIButton(type: .system)
         reloadButton.setImage(UIImage(systemName: "arrow.clockwise"), for: .normal)
         reloadButton.frame = CGRect(x: 0, y: 0, width: 36, height: 30)
-        reloadButton.addTarget(self, action: #selector(reloadTapped), for: .touchUpInside)
-        urlTextField.rightView = reloadButton
-        urlTextField.rightViewMode = .unlessEditing
+        reloadButton.addTarget(self, action: #selector(reloadTapped(_:)), for: .touchUpInside)
+        urlTextField = makeURLField(reload: reloadButton)
+
+        // Second address bar: hidden until a second session is added (the bar is then cut in half).
+        reloadButton2 = UIButton(type: .system)
+        reloadButton2.setImage(UIImage(systemName: "arrow.clockwise"), for: .normal)
+        reloadButton2.frame = CGRect(x: 0, y: 0, width: 36, height: 30)
+        reloadButton2.addTarget(self, action: #selector(reloadTapped(_:)), for: .touchUpInside)
+        urlTextField2 = makeURLField(reload: reloadButton2)
+        urlTextField2.isHidden = true
 
         airPlayToggleButton = createButton(title: "AirPlay: OFF", action: #selector(toggleAirPlayMode))
         airPlayToggleButton.titleLabel?.font = .systemFont(ofSize: 12, weight: .bold)
@@ -227,7 +278,7 @@ class MainAppViewController: UIViewController, UITextFieldDelegate, WKNavigation
         urlTextField.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         urlTextField.setContentHuggingPriority(.defaultLow, for: .horizontal)
 
-        let topStack = UIStackView(arrangedSubviews: [backButton, forwardButton, urlTextField, airPlayToggleButton, settingsButton])
+        let topStack = UIStackView(arrangedSubviews: [backButton, forwardButton, urlTextField, urlTextField2, airPlayToggleButton, settingsButton])
         topStack.axis = .horizontal
         topStack.spacing = 8
         topStack.alignment = .center
@@ -235,10 +286,28 @@ class MainAppViewController: UIViewController, UITextFieldDelegate, WKNavigation
         toolbar.addSubview(topStack)
 
         // 2. Touchpad container (hidden until AirPlay mode is ON)
-        trackpadContainer = UIView()
+        let container = LayoutCallbackView()
+        container.onLayout = { [weak self] in self?.layoutSplitHandle() }
+        trackpadContainer = container
         trackpadContainer.translatesAutoresizingMaskIntoConstraints = false
         trackpadContainer.isHidden = true
         view.addSubview(trackpadContainer)
+
+        // Right-hand column (about 20 %): where a second session is added or closed.
+        sessionPanel = UIView()
+        sessionPanel.translatesAutoresizingMaskIntoConstraints = false
+        sessionPanel.isHidden = true
+        view.addSubview(sessionPanel)
+
+        addSessionButton = makeClickButton(title: "Add a second session", action: #selector(sessionButtonTapped))
+        addSessionButton.translatesAutoresizingMaskIntoConstraints = false
+        addSessionButton.titleLabel?.numberOfLines = 0
+        addSessionButton.titleLabel?.textAlignment = .center
+        addSessionButton.titleLabel?.lineBreakMode = .byWordWrapping
+        addSessionButton.titleLabel?.font = .systemFont(ofSize: 15, weight: .bold)
+        addSessionButton.titleLabel?.adjustsFontSizeToFitWidth = true
+        addSessionButton.titleLabel?.minimumScaleFactor = 0.7
+        sessionPanel.addSubview(addSessionButton)
 
         trackpadView = UIView()
         trackpadView.translatesAutoresizingMaskIntoConstraints = false
@@ -297,6 +366,8 @@ class MainAppViewController: UIViewController, UITextFieldDelegate, WKNavigation
         autoHideButton.translatesAutoresizingMaskIntoConstraints = false
         autoHideButton.titleLabel?.font = .systemFont(ofSize: 14, weight: .semibold)
         autoHideButton.titleLabel?.numberOfLines = 2
+        autoHideButton.titleLabel?.adjustsFontSizeToFitWidth = true
+        autoHideButton.titleLabel?.minimumScaleFactor = 0.6
         autoHideButton.titleLabel?.textAlignment = .center
         autoHideButton.layer.cornerRadius = 12
         autoHideButton.layer.borderWidth = 1
@@ -361,7 +432,19 @@ class MainAppViewController: UIViewController, UITextFieldDelegate, WKNavigation
             // The touchpad stops above the on-screen keyboard, so the keyboard button stays reachable.
             trackpadContainer.topAnchor.constraint(equalTo: toolbar.bottomAnchor),
             trackpadContainer.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor),
-            trackpadContainer.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor),
+            trackpadContainer.widthAnchor.constraint(equalTo: view.safeAreaLayoutGuide.widthAnchor, multiplier: 0.8),
+
+            sessionPanel.topAnchor.constraint(equalTo: toolbar.bottomAnchor),
+            sessionPanel.leadingAnchor.constraint(equalTo: trackpadContainer.trailingAnchor),
+            sessionPanel.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor),
+            sessionPanel.bottomAnchor.constraint(equalTo: trackpadContainer.bottomAnchor),
+
+            addSessionButton.topAnchor.constraint(equalTo: sessionPanel.topAnchor, constant: 16),
+            addSessionButton.leadingAnchor.constraint(equalTo: sessionPanel.leadingAnchor),
+            addSessionButton.trailingAnchor.constraint(equalTo: sessionPanel.trailingAnchor, constant: -16),
+            addSessionButton.heightAnchor.constraint(equalToConstant: 76),
+
+            urlTextField2.widthAnchor.constraint(equalTo: urlTextField.widthAnchor).withPriority(999),
             trackpadContainer.bottomAnchor.constraint(equalTo: view.keyboardLayoutGuide.topAnchor),
 
             trackpadView.topAnchor.constraint(equalTo: trackpadContainer.topAnchor, constant: 16),
@@ -388,7 +471,8 @@ class MainAppViewController: UIViewController, UITextFieldDelegate, WKNavigation
             // Cursor auto-hide toggle, top-left corner of the touchpad
             autoHideButton.topAnchor.constraint(equalTo: trackpadView.topAnchor, constant: 10),
             autoHideButton.leadingAnchor.constraint(equalTo: trackpadView.leadingAnchor, constant: 10),
-            autoHideButton.widthAnchor.constraint(equalToConstant: 150),
+            autoHideButton.widthAnchor.constraint(equalToConstant: 150).withPriority(750),
+            autoHideButton.trailingAnchor.constraint(lessThanOrEqualTo: arrowPad.leadingAnchor, constant: -8),
             autoHideButton.heightAnchor.constraint(equalToConstant: 52),
 
             // Arrow keys, top-right corner of the touchpad
@@ -416,6 +500,14 @@ class MainAppViewController: UIViewController, UITextFieldDelegate, WKNavigation
         setupGestures()
         setupPointerHandling()
 
+        // The bar that sets how wide each of the two pages is (sits on top of the touchpad, only its grip takes touches).
+        splitHandle = SplitHandleView()
+        splitHandle.isHidden = true
+        trackpadContainer.addSubview(splitHandle)
+        let handlePan = UIPanGestureRecognizer(target: self, action: #selector(handleSplitPan(_:)))
+        handlePan.maximumNumberOfTouches = 1
+        splitHandle.addGestureRecognizer(handlePan)
+
         // Website questions (location, camera, JavaScript alerts) are shown here on the iPad, not on the monitor.
         PermissionBridge.shared.presenter = self
         PermissionBridge.shared.onDialogFinished = { [weak self] in
@@ -432,11 +524,13 @@ class MainAppViewController: UIViewController, UITextFieldDelegate, WKNavigation
             placeWebViewOnIPad()
         }
         updateAirPlayButton()
+        updateSessionUI()
 
         if webView.url == nil && !webView.isLoading, let url = URL(string: "https://www.google.com") {
             webView.load(URLRequest(url: url))
         }
         urlTextField.text = webView.url?.absoluteString ?? "https://www.google.com"
+        urlTextField2.text = ""
 
         NotificationCenter.default.addObserver(
             self,
@@ -474,10 +568,38 @@ class MainAppViewController: UIViewController, UITextFieldDelegate, WKNavigation
             name: .webViewNeedsPlacement,
             object: nil
         )
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(sessionsChanged),
+            name: .sessionsChanged,
+            object: nil
+        )
+    }
+
+    /// One address bar. Used twice, so the bar can be cut in half when there are two pages.
+    private func makeURLField(reload: UIButton) -> UITextField {
+        let field = UITextField()
+        field.translatesAutoresizingMaskIntoConstraints = false
+        field.borderStyle = .roundedRect
+        field.placeholder = "Enter URL or search..."
+        field.font = .systemFont(ofSize: 14)
+        field.returnKeyType = .go
+        field.clearButtonMode = .whileEditing
+        field.autocorrectionType = .no
+        field.autocapitalizationType = .none
+        field.keyboardType = .webSearch
+        field.delegate = self
+        field.rightView = reload
+        field.rightViewMode = .unlessEditing
+        field.layer.cornerRadius = 6
+        field.layer.borderColor = UIColor.systemBlue.cgColor
+        field.layer.borderWidth = 0
+        return field
     }
 
     override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
+        layoutSplitHandle()
         // iPadOS draws its window controls (the ••• bubble) over the top-left corner of a split or floating window,
         // which covered Back and Forward. Move the toolbar in when the window is not full screen.
         guard let window = view.window, let windowScene = window.windowScene else { return }
@@ -652,18 +774,27 @@ class MainAppViewController: UIViewController, UITextFieldDelegate, WKNavigation
 
     // MARK: - Reload / stop (the button inside the URL bar)
 
-    @objc private func reloadTapped() {
-        if webView.isLoading {
-            webView.stopLoading()
+    @objc private func reloadTapped(_ sender: UIButton) {
+        let sessions = DisplayController.shared.sessions
+        let index = (sender === reloadButton2) ? 1 : 0
+        guard sessions.indices.contains(index) else { return }
+        let web = sessions[index]
+        DisplayController.shared.focusSession(index)
+        if web.isLoading {
+            web.stopLoading()
         } else {
-            webView.reload()
+            web.reload()
         }
         updateReloadButton()
     }
 
     private func updateReloadButton() {
-        let name = webView.isLoading ? "xmark" : "arrow.clockwise"
-        reloadButton.setImage(UIImage(systemName: name), for: .normal)
+        let sessions = DisplayController.shared.sessions
+        let buttons: [UIButton] = [reloadButton, reloadButton2]
+        for (index, button) in buttons.enumerated() where index < sessions.count {
+            let name = sessions[index].isLoading ? "xmark" : "arrow.clockwise"
+            button.setImage(UIImage(systemName: name), for: .normal)
+        }
     }
 
     @objc private func leftClickDown() {
@@ -758,6 +889,7 @@ class MainAppViewController: UIViewController, UITextFieldDelegate, WKNavigation
         placeWebViewOnIPad()
         applyIncognitoLook()
         urlTextField.text = ""
+        urlTextField2.text = ""
         if let url = URL(string: "https://www.google.com") {
             webView.load(URLRequest(url: url))
         }
@@ -771,8 +903,10 @@ class MainAppViewController: UIViewController, UITextFieldDelegate, WKNavigation
     private func applyIncognitoLook() {
         let on = DisplayController.shared.isIncognito
         toolbar.backgroundColor = on ? UIColor(white: 0.17, alpha: 1) : .secondarySystemBackground
-        urlTextField.overrideUserInterfaceStyle = on ? .dark : .unspecified
-        urlTextField.placeholder = on ? "Incognito: enter URL or search..." : "Enter URL or search..."
+        for field in [urlTextField!, urlTextField2!] {
+            field.overrideUserInterfaceStyle = on ? .dark : .unspecified
+            field.placeholder = on ? "Incognito: enter URL or search..." : "Enter URL or search..."
+        }
     }
 
     // MARK: - YouTube TV options
@@ -952,12 +1086,16 @@ class MainAppViewController: UIViewController, UITextFieldDelegate, WKNavigation
         }
 
         if let url = URL(string: formattedURL) {
-            webView.load(URLRequest(url: url))
+            let sessions = DisplayController.shared.sessions
+            let index = (textField === urlTextField2) ? 1 : 0
+            (sessions.indices.contains(index) ? sessions[index] : webView).load(URLRequest(url: url))
         }
         return true
     }
 
     func textFieldDidBeginEditing(_ textField: UITextField) {
+        // The page whose address bar you tap becomes the focused one (it gets the keyboard and Back / Reload).
+        DisplayController.shared.focusSession(textField === urlTextField2 ? 1 : 0)
         // Like Safari: tapping the bar selects the whole address, so typing replaces it.
         DispatchQueue.main.async {
             textField.selectAll(nil)
@@ -980,7 +1118,7 @@ class MainAppViewController: UIViewController, UITextFieldDelegate, WKNavigation
         // Desktop / mobile / YouTube TV: if the browser has to change its identity for this address
         // (for example when opening youtube.com/tv), load it again so the new identity is really sent.
         let isMainFrame = navigationAction.targetFrame?.isMainFrame ?? true
-        if isMainFrame, DisplayController.shared.prepareIdentity(for: navigationAction.request, preferences: preferences) {
+        if isMainFrame, DisplayController.shared.prepareIdentity(for: navigationAction.request, preferences: preferences, webView: webView) {
             let request: URLRequest = {
                 var copy = navigationAction.request
                 if YouTubeTV.isTVAddress(copy.url) { copy.cachePolicy = .reloadIgnoringLocalCacheData }
@@ -1037,16 +1175,22 @@ class MainAppViewController: UIViewController, UITextFieldDelegate, WKNavigation
 
     // MARK: - WKNavigationDelegate (keeps the URL bar in sync, including swipes and back/forward)
     func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
-        DisplayController.shared.applyZoomForCurrentPage()
+        DisplayController.shared.applyZoomForCurrentPage(for: webView)
         DisplayController.shared.syncFullscreenMode()
         if let urlString = webView.url?.absoluteString {
-            urlTextField.text = urlString
+            field(for: webView)?.text = urlString
         }
+    }
+
+    /// The address bar that belongs to a page.
+    private func field(for web: WKWebView) -> UITextField? {
+        guard let index = DisplayController.shared.index(of: web) else { return nil }
+        return index == 0 ? urlTextField : urlTextField2
     }
 
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         if let urlString = webView.url?.absoluteString {
-            urlTextField.text = urlString
+            field(for: webView)?.text = urlString
         }
         updateReloadButton()
     }
@@ -1099,6 +1243,7 @@ class MainAppViewController: UIViewController, UITextFieldDelegate, WKNavigation
         }
 
         updateAirPlayButton()
+        updateSessionUI()
         updateMouseClickBlocking()
         pointerHider?.invalidate()
         refreshPointerLock()
@@ -1250,10 +1395,95 @@ class MainAppViewController: UIViewController, UITextFieldDelegate, WKNavigation
     }
 
     private func focusCaptureIfNeeded() {
-        guard isAirPlayModeActive, view.window != nil, presentedViewController == nil, !urlTextField.isFirstResponder else { return }
+        guard isAirPlayModeActive, view.window != nil, presentedViewController == nil, !urlTextField.isFirstResponder, !urlTextField2.isFirstResponder else { return }
         if !keyCapture.isFirstResponder {
             _ = keyCapture.becomeFirstResponder()
         }
+    }
+
+    // MARK: - Second session (two pages on the monitor)
+
+    @objc private func sessionsChanged() {
+        updateSessionUI()
+    }
+
+    /// Shows the right address bars, the split bar and the right button for the pages that are open.
+    private func updateSessionUI() {
+        let display = DisplayController.shared
+        let split = isAirPlayModeActive && display.sessionCount == 2
+
+        // Two pages on the monitor: the bar is cut in half. Otherwise only the page that is shown has a bar.
+        urlTextField.isHidden = !(split || display.focusedIndex == 0)
+        urlTextField2.isHidden = !(split || display.focusedIndex == 1)
+
+        // The page that gets the keyboard has a blue outline on its address bar.
+        urlTextField.layer.borderWidth = (split && display.focusedIndex == 0) ? 2 : 0
+        urlTextField2.layer.borderWidth = (split && display.focusedIndex == 1) ? 2 : 0
+
+        sessionPanel.isHidden = !isAirPlayModeActive
+        splitHandle.isHidden = !split
+        addSessionButton.setTitle(display.sessionCount >= DisplayController.maxSessions ? "Close a session..." : "Add a second session", for: .normal)
+
+        syncURLFields()
+        updateReloadButton()
+        layoutSplitHandle()
+    }
+
+    /// Writes each page's address into its bar (except the bar being typed in).
+    private func syncURLFields() {
+        let fields: [UITextField] = [urlTextField, urlTextField2]
+        let sessions = DisplayController.shared.sessions
+        for (index, web) in sessions.enumerated() where index < fields.count {
+            if fields[index].isFirstResponder { continue }
+            if let address = web.url?.absoluteString { fields[index].text = address }
+        }
+    }
+
+    @objc private func sessionButtonTapped() {
+        let display = DisplayController.shared
+        guard isAirPlayModeActive else { return }
+
+        if display.sessionCount < DisplayController.maxSessions {
+            guard let web = display.addSession() else { return }
+            web.navigationDelegate = self
+            if let url = URL(string: "https://www.google.com") { web.load(URLRequest(url: url)) }
+            updateSessionUI()
+            showToast("Second session added. Click a page with the mouse to choose which one gets the keyboard.")
+        } else {
+            let alert = UIAlertController(title: "Close a session", message: "Which page do you want to close?", preferredStyle: .alert)
+            alert.addAction(UIAlertAction(title: "Close left page", style: .destructive) { [weak self] _ in
+                self?.closeSession(at: 0)
+            })
+            alert.addAction(UIAlertAction(title: "Close right page", style: .destructive) { [weak self] _ in
+                self?.closeSession(at: 1)
+            })
+            alert.addAction(UIAlertAction(title: "Cancel", style: .cancel) { [weak self] _ in
+                DispatchQueue.main.async { self?.focusCaptureIfNeeded() }
+            })
+            present(alert, animated: true)
+        }
+    }
+
+    private func closeSession(at index: Int) {
+        DisplayController.shared.closeSession(at: index)
+        webView.navigationDelegate = self
+        updateSessionUI()
+        DispatchQueue.main.async { [weak self] in self?.focusCaptureIfNeeded() }
+    }
+
+    /// Keeps the split bar where the ratio says: that share of the touchpad's width.
+    private func layoutSplitHandle() {
+        guard let handle = splitHandle, let pad = trackpadView, pad.frame.width > 0 else { return }
+        let ratio = DisplayController.shared.splitRatio
+        let centerX = pad.frame.minX + pad.frame.width * ratio
+        handle.frame = CGRect(x: centerX - 30, y: pad.frame.minY, width: 60, height: pad.frame.height)
+    }
+
+    @objc private func handleSplitPan(_ gesture: UIPanGestureRecognizer) {
+        guard trackpadView.frame.width > 0 else { return }
+        let x = gesture.location(in: trackpadContainer).x
+        DisplayController.shared.splitRatio = (x - trackpadView.frame.minX) / trackpadView.frame.width
+        layoutSplitHandle()
     }
 
     // MARK: - Web view placement
@@ -1277,5 +1507,13 @@ class MainAppViewController: UIViewController, UITextFieldDelegate, WKNavigation
             webView.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor)
         ]
         NSLayoutConstraint.activate(webViewConstraints)
+    }
+}
+
+
+private extension NSLayoutConstraint {
+    func withPriority(_ value: Float) -> NSLayoutConstraint {
+        priority = UILayoutPriority(value)
+        return self
     }
 }
