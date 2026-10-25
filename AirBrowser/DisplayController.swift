@@ -8,6 +8,8 @@ extension Notification.Name {
     static let externalDisplayAvailabilityChanged = Notification.Name("AirBrowser.externalDisplayAvailabilityChanged")
     /// Posted when the page left full screen and the web view may need putting back on the iPad.
     static let webViewNeedsPlacement = Notification.Name("AirBrowser.webViewNeedsPlacement")
+    /// Posted when pages are added or closed, or when another page gets the focus.
+    static let sessionsChanged = Notification.Name("AirBrowser.sessionsChanged")
 }
 
 // MARK: - Tunables (change these if a physical mouse feels off)
@@ -493,7 +495,15 @@ private let fullscreenScript = #"""
 final class DisplayController: ObservableObject {
     static let shared = DisplayController()
 
-    private(set) var webView: WKWebView
+    /// Every open page ("session"). A second one can be added while AirPlay mode is ON.
+    private(set) var sessions: [WKWebView]
+    private(set) var focusedIndex = 0
+    static let maxSessions = 2
+    /// The page that has focus. It gets the keyboard, and the iPad's Back / Reload buttons.
+    var webView: WKWebView { return sessions[min(max(focusedIndex, 0), sessions.count - 1)] }
+    var sessionCount: Int { return sessions.count }
+    /// Private browsing shares ONE in-memory store between its pages, so a login works in both.
+    private var incognitoStore = WKWebsiteDataStore.nonPersistent()
     /// True while browsing privately: nothing is saved (no history, cookies or site data).
     private(set) var isIncognito = false
     private var incognitoZoomLevels: [String: CGFloat] = [:]
@@ -509,7 +519,7 @@ final class DisplayController: ObservableObject {
     private weak var externalScene: UIWindowScene?
     private weak var externalController: ExternalBrowserViewController?
     /// The user agent we last gave the web view (reading it back from the web view is not reliable).
-    private var appliedAgent: String?
+    private var appliedAgents: [ObjectIdentifier: String?] = [:]
     private var lastCursorActivity = Date()
     private var cursorWatchTimer: Timer?
     /// False while another app is focused (Split View / Stage Manager). Keyboard keys are then read here.
@@ -526,16 +536,15 @@ final class DisplayController: ObservableObject {
     /// Last TV address we reloaded from scratch (stops a reload loop).
     private var lastFreshTV: (from: String, time: Date)?
     private var mouseObserver: NSObjectProtocol?
-    private var urlObservation: NSKeyValueObservation?
-    private var titleObservation: NSKeyValueObservation?
-    private var fullscreenObservation: NSKeyValueObservation?
+    private var observations: [ObjectIdentifier: [NSKeyValueObservation]] = [:]
 
     private init() {
         let startingAgent = DisplayController.standardAgent(desktop: DisplayController.loadPrefersDesktopSite())
 
-        self.webView = DisplayController.buildWebView(incognito: false)
+        let firstWeb = DisplayController.buildWebView(incognito: false, store: nil)
+        self.sessions = [firstWeb]
         self.cursorView = DisplayController.makeCursorView()
-        self.appliedAgent = startingAgent
+        self.appliedAgents[ObjectIdentifier(firstWeb)] = .some(startingAgent)
 
         NotificationCenter.default.addObserver(
             self,
@@ -544,15 +553,15 @@ final class DisplayController: ObservableObject {
             object: nil
         )
 
-        attachHistoryObservers()
+        attachObservers(to: firstWeb)
     }
 
     /// Builds the web view the whole app shares. A private (incognito) one keeps nothing on the device.
-    private static func buildWebView(incognito: Bool) -> WKWebView {
+    private static func buildWebView(incognito: Bool, store: WKWebsiteDataStore?) -> WKWebView {
         let config = WKWebViewConfiguration()
         if incognito {
             // A store that lives only in memory: cookies, logins and site data vanish with the web view.
-            config.websiteDataStore = WKWebsiteDataStore.nonPersistent()
+            config.websiteDataStore = store ?? WKWebsiteDataStore.nonPersistent()
         }
         config.allowsInlineMediaPlayback = true
         config.mediaTypesRequiringUserActionForPlayback = []
@@ -619,85 +628,144 @@ final class DisplayController: ObservableObject {
 
     // History: watch the address and title instead of only page loads, so pages that change
     // without a full load (YouTube videos, for example) are recorded too. Not while incognito.
-    private func attachHistoryObservers() {
-        urlObservation = nil
-        titleObservation = nil
-        fullscreenObservation = nil
-        fullscreenObservation = webView.observe(\.fullscreenState, options: [.new]) { [weak self] _, _ in
-            self?.webViewFullscreenChanged()
+    private func attachObservers(to web: WKWebView) {
+        let fullscreen = web.observe(\.fullscreenState, options: [.new]) { [weak self] changed, _ in
+            self?.webViewFullscreenChanged(changed)
         }
-        urlObservation = webView.observe(\.url, options: [.new]) { [weak self] webView, _ in
+        let address = web.observe(\.url, options: [.new]) { [weak self] changed, _ in
             if self?.isIncognito == true { return }
-            HistoryStore.shared.record(url: webView.url, title: nil)
+            HistoryStore.shared.record(url: changed.url, title: nil)
         }
-        titleObservation = webView.observe(\.title, options: [.new]) { [weak self] webView, _ in
+        let name = web.observe(\.title, options: [.new]) { [weak self] changed, _ in
             if self?.isIncognito == true { return }
-            HistoryStore.shared.record(url: webView.url, title: webView.title)
+            HistoryStore.shared.record(url: changed.url, title: changed.title)
         }
+        observations[ObjectIdentifier(web)] = [fullscreen, address, name]
     }
 
-    // MARK: - AirPlay mode is remembered
-
-    private static let airPlayWantedKey = "AirBrowser.airPlayWanted"
-
-    /// True when AirPlay mode was ON the last time the person chose. It is switched back on by itself when the app
-    /// starts again, when the monitor is plugged in again, or when AirBrowser is focused again after another app had it.
-    var airPlayWanted: Bool {
-        get { return UserDefaults.standard.bool(forKey: DisplayController.airPlayWantedKey) }
-        set { UserDefaults.standard.set(newValue, forKey: DisplayController.airPlayWantedKey) }
+    private func retire(_ web: WKWebView) {
+        observations[ObjectIdentifier(web)] = nil
+        appliedAgents[ObjectIdentifier(web)] = nil
+        web.stopLoading()
+        web.navigationDelegate = nil
+        web.removeFromSuperview()
     }
+
+    // MARK: - AirPlay mode comes back after leaving the app and returning
+
+    /// True when AirPlay mode was ON when the app was left (Home, or another app took focus). It is switched back on
+    /// when AirBrowser is opened again. This lives in memory only: closing the app and launching it again starts with
+    /// AirPlay OFF.
+    var airPlayWanted = false
 
     // MARK: - Full screen mode
 
-    /// Tells the page whether to do full screen itself (monitor) or use WebKit's (iPad). Call after the monitor
+    /// Tells every page whether to do full screen itself (monitor) or use WebKit's (iPad). Call after the monitor
     /// is switched on or off, and again whenever a new page starts (see MainAppViewController.didCommit).
     func syncFullscreenMode() {
-        webView.evaluateJavaScript("window.__abFS && window.__abFS.setExternal(\(isExternalConnected ? "true" : "false"));")
+        let call = "window.__abFS && window.__abFS.setExternal(\(isExternalConnected ? "true" : "false"));"
+        for web in sessions { web.evaluateJavaScript(call) }
     }
 
     // MARK: - Leaving full screen
 
-    /// When a page leaves full screen WebKit puts the web view back where it was. If that lost the layout rules
-    /// (so the page would be the wrong size), pin it again.
-    private func webViewFullscreenChanged() {
-        guard webView.fullscreenState == .notInFullscreen else { return }
+    /// When a page leaves full screen WebKit puts the web view back where it was. If that lost the layout (so the page
+    /// would be the wrong size), set it up again.
+    private func webViewFullscreenChanged(_ web: WKWebView) {
+        guard web.fullscreenState == .notInFullscreen else { return }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in
             guard let self = self else { return }
             if self.isExternalConnected {
-                self.externalController?.pinWebView()
+                self.externalController?.refreshLayout()
             } else {
                 NotificationCenter.default.post(name: .webViewNeedsPlacement, object: nil)
             }
         }
     }
 
+    // MARK: - Pages (sessions)
+
+    /// Share of the monitor's width given to the first page (0.2 ... 0.8) while two pages are open.
+    var splitRatio: CGFloat = 0.5 {
+        didSet {
+            let clamped = min(max(splitRatio, 0.2), 0.8)
+            if clamped != splitRatio { splitRatio = clamped }
+            externalController?.splitRatio = clamped
+        }
+    }
+
+    private func postSessionsChanged() {
+        NotificationCenter.default.post(name: .sessionsChanged, object: nil)
+    }
+
+    func index(of web: WKWebView) -> Int? {
+        return sessions.firstIndex(where: { $0 === web })
+    }
+
+    /// Makes one page the focused one: the keyboard types into it, and the iPad's buttons act on it.
+    func focusSession(_ index: Int) {
+        guard sessions.indices.contains(index), index != focusedIndex else { return }
+        focusedIndex = index
+        postSessionsChanged()
+    }
+
+    /// Opens a second page next to the first. The caller sets its navigation delegate and loads an address.
+    @discardableResult
+    func addSession() -> WKWebView? {
+        guard sessions.count < DisplayController.maxSessions else { return nil }
+        let web = DisplayController.buildWebView(incognito: isIncognito, store: isIncognito ? incognitoStore : nil)
+        appliedAgents[ObjectIdentifier(web)] = .some(DisplayController.standardAgent(desktop: prefersDesktopSite))
+        attachObservers(to: web)
+        sessions.append(web)
+        focusedIndex = sessions.count - 1
+        externalController?.setWebViews(sessions)
+        syncFullscreenMode()
+        postSessionsChanged()
+        return web
+    }
+
+    /// Closes one page. The other one takes the whole monitor.
+    func closeSession(at index: Int) {
+        guard sessions.count > 1, sessions.indices.contains(index) else { return }
+        pointerIsDown = false
+        pointerDragged = false
+        let old = sessions.remove(at: index)
+        retire(old)
+        focusedIndex = 0
+        externalController?.setWebViews(sessions)
+        postSessionsChanged()
+    }
+
     // MARK: - Incognito
 
     /// Switches between normal and private browsing by swapping in a brand new web view.
-    /// The caller puts the new web view on screen and loads a page.
+    /// The caller puts the new web view on screen and loads a page. Any second page is closed.
     func setIncognito(_ on: Bool) {
         guard on != isIncognito else { return }
         stopExternalPresentation()
 
-        let old = webView
+        let oldSessions = sessions
+        let oldStore = incognitoStore
         let wasPrivate = isIncognito
         isIncognito = on
         incognitoZoomLevels.removeAll()
+        if on { incognitoStore = WKWebsiteDataStore.nonPersistent() }
 
-        webView = DisplayController.buildWebView(incognito: on)
-        appliedAgent = DisplayController.standardAgent(desktop: prefersDesktopSite)
-        attachHistoryObservers()
+        let fresh = DisplayController.buildWebView(incognito: on, store: on ? incognitoStore : nil)
+        sessions = [fresh]
+        focusedIndex = 0
+        appliedAgents[ObjectIdentifier(fresh)] = .some(DisplayController.standardAgent(desktop: prefersDesktopSite))
+        attachObservers(to: fresh)
 
-        old.stopLoading()
-        old.navigationDelegate = nil
-        old.removeFromSuperview()
+        for old in oldSessions { retire(old) }
         if wasPrivate {
             // Leaving incognito: erase everything the private session collected.
-            old.configuration.websiteDataStore.removeData(
+            oldStore.removeData(
                 ofTypes: WKWebsiteDataStore.allWebsiteDataTypes(),
                 modifiedSince: Date(timeIntervalSince1970: 0)
             ) {}
         }
+        postSessionsChanged()
     }
 
     // MARK: - Page size (zoom), remembered per website
@@ -738,7 +806,8 @@ final class DisplayController: ObservableObject {
             }
             UserDefaults.standard.set(all, forKey: DisplayController.siteZoomKey)
         }
-        webView.pageZoom = DisplayController.webKitZoom(for: value)
+        let wanted = DisplayController.webKitZoom(for: value)
+        for web in sessions where web.url?.host?.lowercased() == host { web.pageZoom = wanted }
     }
 
     func zoomIn() {
@@ -756,9 +825,9 @@ final class DisplayController: ObservableObject {
     }
 
     /// Call when a page starts showing: applies the size saved for that website.
-    func applyZoomForCurrentPage() {
-        let wanted = DisplayController.webKitZoom(for: currentZoom)
-        if abs(webView.pageZoom - wanted) > 0.001 { webView.pageZoom = wanted }
+    func applyZoomForCurrentPage(for web: WKWebView) {
+        let wanted = DisplayController.webKitZoom(for: zoomLevel(for: web.url?.host?.lowercased()))
+        if abs(web.pageZoom - wanted) > 0.001 { web.pageZoom = wanted }
     }
 
     // MARK: - Site identity (desktop / mobile / YouTube TV)
@@ -877,7 +946,7 @@ final class DisplayController: ObservableObject {
 
     /// Picks the user agent and page layout for a navigation. Returns true if the web view's user agent
     /// had to change; the caller must then load the request again so the new one is actually sent.
-    func prepareIdentity(for request: URLRequest, preferences: WKWebpagePreferences) -> Bool {
+    func prepareIdentity(for request: URLRequest, preferences: WKWebpagePreferences, webView web: WKWebView) -> Bool {
         let isTV = YouTubeTV.isTVAddress(request.url)
         let desktop = prefersDesktopSite
 
@@ -892,9 +961,10 @@ final class DisplayController: ObservableObject {
 
         // Compare with what we set ourselves. Once it matches, the request goes through,
         // so this can never turn into an endless reload loop.
-        if appliedAgent != agent {
-            appliedAgent = agent
-            webView.customUserAgent = agent
+        let known: String? = appliedAgents[ObjectIdentifier(web)] ?? nil
+        if known != agent {
+            appliedAgents[ObjectIdentifier(web)] = .some(agent)
+            web.customUserAgent = agent
             return true
         }
         return false
@@ -960,7 +1030,7 @@ final class DisplayController: ObservableObject {
         }
 
         // The view controller pulls the web view and cursor out of the iPad UI and pins them fullscreen.
-        let controller = ExternalBrowserViewController(webView: webView, cursorView: cursorView)
+        let controller = ExternalBrowserViewController(webViews: sessions, cursorView: cursorView, ratio: splitRatio)
         controller.loadViewIfNeeded()
         externalController = controller
 
@@ -1016,7 +1086,9 @@ final class DisplayController: ObservableObject {
     private func nudgeLayout() {
         for delay in [0.2, 0.8, 2.0] {
             DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
-                self?.webView.evaluateJavaScript("window.dispatchEvent(new Event('resize'));")
+                for web in self?.sessions ?? [] {
+                    web.evaluateJavaScript("window.dispatchEvent(new Event('resize'));")
+                }
             }
         }
     }
@@ -1030,7 +1102,7 @@ final class DisplayController: ObservableObject {
         stopCursorWatch()
         stopKeyboardForwarding()
 
-        webView.removeFromSuperview()
+        for web in sessions { web.removeFromSuperview() }
         cursorView.removeFromSuperview()
         window.isHidden = true
         window.rootViewController = nil
@@ -1222,24 +1294,57 @@ final class DisplayController: ObservableObject {
         cursorView.alpha = 1
     }
 
+    // MARK: - Which page is under the cursor
+
+    /// The page under a point on the monitor (the nearest one, if the point is on the black line between two pages),
+    /// and where that point is inside the page.
+    private func target(at point: CGPoint) -> (index: Int, web: WKWebView, local: CGPoint)? {
+        guard !sessions.isEmpty else { return nil }
+        var best = 0
+        var bestDistance = CGFloat.greatestFiniteMagnitude
+        for (index, web) in sessions.enumerated() {
+            let frame = web.frame
+            if frame.width <= 0 || frame.height <= 0 { continue }
+            let distance = max(frame.minX - point.x, 0, point.x - frame.maxX)
+            if distance < bestDistance {
+                bestDistance = distance
+                best = index
+            }
+        }
+        let web = sessions[best]
+        return (best, web, local(point, in: web))
+    }
+
+    private func local(_ point: CGPoint, in web: WKWebView) -> CGPoint {
+        return CGPoint(x: point.x - web.frame.origin.x, y: point.y - web.frame.origin.y)
+    }
+
     // MARK: - Press and slide to highlight text
+
+    /// The page the current press started on (a press and slide stays inside that page).
+    private weak var pressedWeb: WKWebView?
 
     /// The button went down (mouse button, the Left Click button, or a press-and-hold on the touchpad).
     func pointerDown() {
-        guard isExternalConnected, !pointerIsDown else { return }
+        guard isExternalConnected, !pointerIsDown, let hit = target(at: cursorPosition) else { return }
+        focusSession(hit.index)
+        pressedWeb = hit.web
         pointerIsDown = true
         pointerDragged = false
         pointerDownPosition = cursorPosition
     }
 
     private func pointerDragUpdate() {
+        guard let web = pressedWeb else { return }
         let moved = hypot(cursorPosition.x - pointerDownPosition.x, cursorPosition.y - pointerDownPosition.y)
         if !pointerDragged {
             if moved < 6 { return } // a little wobble is still a click
             pointerDragged = true
-            webView.evaluateJavaScript("window.__ab && window.__ab.selectStart(\(pointerDownPosition.x), \(pointerDownPosition.y));")
+            let start = local(pointerDownPosition, in: web)
+            web.evaluateJavaScript("window.__ab && window.__ab.selectStart(\(start.x), \(start.y));")
         }
-        webView.evaluateJavaScript("window.__ab && window.__ab.selectMove(\(cursorPosition.x), \(cursorPosition.y));")
+        let now = local(cursorPosition, in: web)
+        web.evaluateJavaScript("window.__ab && window.__ab.selectMove(\(now.x), \(now.y));")
     }
 
     /// The button came up: finish the highlight, or, if nothing was dragged, click.
@@ -1248,10 +1353,14 @@ final class DisplayController: ObservableObject {
         pointerIsDown = false
         if pointerDragged {
             pointerDragged = false
-            webView.evaluateJavaScript("window.__ab && window.__ab.selectEnd(\(cursorPosition.x), \(cursorPosition.y));")
+            if let web = pressedWeb {
+                let end = local(cursorPosition, in: web)
+                web.evaluateJavaScript("window.__ab && window.__ab.selectEnd(\(end.x), \(end.y));")
+            }
         } else {
             performClickAtCursor()
         }
+        pressedWeb = nil
     }
 
     // MARK: - Copy / select all (also used by Cmd+C and Cmd+A on a keyboard)
@@ -1269,13 +1378,14 @@ final class DisplayController: ObservableObject {
         webView.evaluateJavaScript("window.__ab && window.__ab.selectAll();")
     }
 
-    /// button: 0 = left click, 2 = right click
+    /// button: 0 = left click, 2 = right click. The page under the cursor gets the click and the keyboard focus.
     func performClickAtCursor(button: Int = 0) {
-        guard isExternalConnected else { return }
+        guard isExternalConnected, let hit = target(at: cursorPosition) else { return }
         cursorActivity()
+        focusSession(hit.index)
 
         if button == 2 {
-            webView.evaluateJavaScript("window.__ab && window.__ab.contextMenu(\(cursorPosition.x), \(cursorPosition.y));")
+            hit.web.evaluateJavaScript("window.__ab && window.__ab.contextMenu(\(hit.local.x), \(hit.local.y));")
             return
         }
 
@@ -1295,17 +1405,17 @@ final class DisplayController: ObservableObject {
             var field = el.closest('input, textarea, select, [contenteditable=""], [contenteditable="true"]');
             if (field) { field.focus(); }
             el.click();
-        })(\(cursorPosition.x), \(cursorPosition.y), \(button));
+        })(\(hit.local.x), \(hit.local.y), \(button));
         """
-        webView.evaluateJavaScript(js)
+        hit.web.evaluateJavaScript(js)
     }
 
     /// Scrolls the scrollable thing under the cursor (inner scroller first, then the page).
     /// Positive deltaY scrolls the page down.
     func scroll(deltaX: CGFloat, deltaY: CGFloat) {
-        guard isExternalConnected, deltaX != 0 || deltaY != 0 else { return }
+        guard isExternalConnected, deltaX != 0 || deltaY != 0, let hit = target(at: cursorPosition) else { return }
         // The TV page is not meant to scroll; moving it is what exposed black bars.
-        if YouTubeTV.isTVAddress(webView.url) { return }
+        if YouTubeTV.isTVAddress(hit.web.url) { return }
 
         let js = """
         (function(x, y, dx, dy) {
@@ -1320,9 +1430,9 @@ final class DisplayController: ObservableObject {
                 el = el.parentElement;
             }
             window.scrollBy(dx, dy);
-        })(\(cursorPosition.x), \(cursorPosition.y), \(deltaX), \(deltaY));
+        })(\(hit.local.x), \(hit.local.y), \(deltaX), \(deltaY));
         """
-        webView.evaluateJavaScript(js)
+        hit.web.evaluateJavaScript(js)
     }
 
     func performScroll(deltaY: CGFloat) {
