@@ -50,6 +50,7 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
 class ExternalBrowserViewController: UIViewController {
     let webView: WKWebView
     let cursorView: UIView
+    private var pins: [NSLayoutConstraint] = []
 
     init(webView: WKWebView, cursorView: UIView) {
         self.webView = webView
@@ -66,19 +67,33 @@ class ExternalBrowserViewController: UIViewController {
         view.backgroundColor = .black
 
         // Pull the shared web view out of the iPad UI and pin it edge to edge.
-        webView.removeFromSuperview()
-        webView.translatesAutoresizingMaskIntoConstraints = false
-        view.addSubview(webView)
-
-        NSLayoutConstraint.activate([
-            webView.topAnchor.constraint(equalTo: view.topAnchor),
-            webView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
-            webView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
-            webView.trailingAnchor.constraint(equalTo: view.trailingAnchor)
-        ])
+        pinWebView(force: true)
 
         // Cursor dot sits on top of the page.
         cursorView.removeFromSuperview()
         view.addSubview(cursorView)
+    }
+
+    /// Pins the web view to all four edges of the monitor. Does nothing if it is already pinned,
+    /// unless `force` is true (used after a page leaves full screen, which can drop the layout rules).
+    func pinWebView(force: Bool = false) {
+        if !force, webView.superview === view, !pins.isEmpty, pins.allSatisfy({ $0.isActive }) { return }
+
+        NSLayoutConstraint.deactivate(pins)
+        if webView.superview !== view {
+            webView.removeFromSuperview()
+            view.insertSubview(webView, at: 0)
+        }
+        webView.translatesAutoresizingMaskIntoConstraints = false
+
+        pins = [
+            webView.topAnchor.constraint(equalTo: view.topAnchor),
+            webView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+            webView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            webView.trailingAnchor.constraint(equalTo: view.trailingAnchor)
+        ]
+        NSLayoutConstraint.activate(pins)
+
+        if cursorView.superview === view { view.bringSubviewToFront(cursorView) }
     }
 }
