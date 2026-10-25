@@ -15,11 +15,16 @@
     <key>CFBundlePackageType</key>
     <string>$(PRODUCT_BUNDLE_PACKAGE_TYPE)</string>
     <key>CFBundleShortVersionString</key>
-    <string>1.6</string>
+    <string>1.7</string>
     <key>CFBundleVersion</key>
     <string>1</string>
     <key>LSRequiresIPhoneOS</key>
     <true/>
+
+    <key>UIApplicationSupportsIndirectInputEvents</key>
+    <true/>
+    <key>NSLocationWhenInUseUsageDescription</key>
+    <string>Websites you allow can use your approximate location.</string>
     
     <key>UIApplicationSceneManifest</key>
     <dict>
