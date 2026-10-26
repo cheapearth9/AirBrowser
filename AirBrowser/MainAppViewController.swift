@@ -220,6 +220,7 @@ class MainAppViewController: UIViewController, UITextFieldDelegate, WKNavigation
     /// Right-hand column in AirPlay mode: the "Add a second session" button.
     private var sessionPanel: UIView!
     private var addSessionButton: UIButton!
+    private var resizeMiddleButton: UIButton!
     private var splitHandle: SplitHandleView!
     private var autoHideButton: UIButton!
     private var toolbarLeadingConstraint: NSLayoutConstraint?
@@ -308,6 +309,18 @@ class MainAppViewController: UIViewController, UITextFieldDelegate, WKNavigation
         addSessionButton.titleLabel?.adjustsFontSizeToFitWidth = true
         addSessionButton.titleLabel?.minimumScaleFactor = 0.7
         sessionPanel.addSubview(addSessionButton)
+
+        // Under it (two pages only): puts the split bar back in the middle.
+        resizeMiddleButton = makeClickButton(title: "Resize back to middle", action: #selector(resizeBackToMiddle))
+        resizeMiddleButton.translatesAutoresizingMaskIntoConstraints = false
+        resizeMiddleButton.titleLabel?.numberOfLines = 0
+        resizeMiddleButton.titleLabel?.textAlignment = .center
+        resizeMiddleButton.titleLabel?.lineBreakMode = .byWordWrapping
+        resizeMiddleButton.titleLabel?.font = .systemFont(ofSize: 15, weight: .bold)
+        resizeMiddleButton.titleLabel?.adjustsFontSizeToFitWidth = true
+        resizeMiddleButton.titleLabel?.minimumScaleFactor = 0.7
+        resizeMiddleButton.isHidden = true
+        sessionPanel.addSubview(resizeMiddleButton)
 
         trackpadView = UIView()
         trackpadView.translatesAutoresizingMaskIntoConstraints = false
@@ -443,6 +456,11 @@ class MainAppViewController: UIViewController, UITextFieldDelegate, WKNavigation
             addSessionButton.leadingAnchor.constraint(equalTo: sessionPanel.leadingAnchor),
             addSessionButton.trailingAnchor.constraint(equalTo: sessionPanel.trailingAnchor, constant: -16),
             addSessionButton.heightAnchor.constraint(equalToConstant: 76),
+
+            resizeMiddleButton.topAnchor.constraint(equalTo: addSessionButton.bottomAnchor, constant: 12),
+            resizeMiddleButton.leadingAnchor.constraint(equalTo: sessionPanel.leadingAnchor),
+            resizeMiddleButton.trailingAnchor.constraint(equalTo: sessionPanel.trailingAnchor, constant: -16),
+            resizeMiddleButton.heightAnchor.constraint(equalToConstant: 76),
 
             urlTextField2.widthAnchor.constraint(equalTo: urlTextField.widthAnchor).withPriority(999),
             trackpadContainer.bottomAnchor.constraint(equalTo: view.keyboardLayoutGuide.topAnchor),
@@ -1422,6 +1440,7 @@ class MainAppViewController: UIViewController, UITextFieldDelegate, WKNavigation
 
         sessionPanel.isHidden = !isAirPlayModeActive
         splitHandle.isHidden = !split
+        resizeMiddleButton.isHidden = !split
         addSessionButton.setTitle(display.sessionCount >= DisplayController.maxSessions ? "Close a session..." : "Add a second session", for: .normal)
 
         syncURLFields()
@@ -1477,6 +1496,12 @@ class MainAppViewController: UIViewController, UITextFieldDelegate, WKNavigation
         let ratio = DisplayController.shared.splitRatio
         let centerX = pad.frame.minX + pad.frame.width * ratio
         handle.frame = CGRect(x: centerX - 30, y: pad.frame.minY, width: 60, height: pad.frame.height)
+    }
+
+    /// Puts the split bar back in the middle: both pages get half of the monitor.
+    @objc private func resizeBackToMiddle() {
+        DisplayController.shared.splitRatio = 0.5
+        layoutSplitHandle()
     }
 
     @objc private func handleSplitPan(_ gesture: UIPanGestureRecognizer) {
