@@ -221,6 +221,7 @@ class MainAppViewController: UIViewController, UITextFieldDelegate, WKNavigation
     private var sessionPanel: UIView!
     private var addSessionButton: UIButton!
     private var resizeMiddleButton: UIButton!
+    private var screenshotButton: UIButton!
     private var splitHandle: SplitHandleView!
     private var autoHideButton: UIButton!
     private var toolbarLeadingConstraint: NSLayoutConstraint?
@@ -308,7 +309,6 @@ class MainAppViewController: UIViewController, UITextFieldDelegate, WKNavigation
         addSessionButton.titleLabel?.font = .systemFont(ofSize: 15, weight: .bold)
         addSessionButton.titleLabel?.adjustsFontSizeToFitWidth = true
         addSessionButton.titleLabel?.minimumScaleFactor = 0.7
-        sessionPanel.addSubview(addSessionButton)
 
         // Under it (two pages only): puts the split bar back in the middle.
         resizeMiddleButton = makeClickButton(title: "Resize back to middle", action: #selector(resizeBackToMiddle))
@@ -320,7 +320,25 @@ class MainAppViewController: UIViewController, UITextFieldDelegate, WKNavigation
         resizeMiddleButton.titleLabel?.adjustsFontSizeToFitWidth = true
         resizeMiddleButton.titleLabel?.minimumScaleFactor = 0.7
         resizeMiddleButton.isHidden = true
-        sessionPanel.addSubview(resizeMiddleButton)
+
+        // Always last: saves a picture of the monitor (only the monitor) to Photos.
+        screenshotButton = makeClickButton(title: "Take a screenshot", action: #selector(screenshotTapped))
+        screenshotButton.translatesAutoresizingMaskIntoConstraints = false
+        screenshotButton.titleLabel?.numberOfLines = 0
+        screenshotButton.titleLabel?.textAlignment = .center
+        screenshotButton.titleLabel?.lineBreakMode = .byWordWrapping
+        screenshotButton.titleLabel?.font = .systemFont(ofSize: 15, weight: .bold)
+        screenshotButton.titleLabel?.adjustsFontSizeToFitWidth = true
+        screenshotButton.titleLabel?.minimumScaleFactor = 0.7
+
+        // The column: Add / Close a session, then (two pages only) Resize back to middle, then Take a screenshot.
+        let sessionStack = UIStackView(arrangedSubviews: [addSessionButton, resizeMiddleButton, screenshotButton])
+        sessionStack.axis = .vertical
+        sessionStack.spacing = 12
+        sessionStack.alignment = .fill
+        sessionStack.distribution = .fill
+        sessionStack.translatesAutoresizingMaskIntoConstraints = false
+        sessionPanel.addSubview(sessionStack)
 
         trackpadView = UIView()
         trackpadView.translatesAutoresizingMaskIntoConstraints = false
@@ -332,8 +350,8 @@ class MainAppViewController: UIViewController, UITextFieldDelegate, WKNavigation
 
         let touchpadLabel = UILabel()
         touchpadLabel.translatesAutoresizingMaskIntoConstraints = false
-        touchpadLabel.text = "iPad Touchpad Control Area\n(Drag to move, tap to click, two fingers to scroll)"
-        touchpadLabel.numberOfLines = 2
+        touchpadLabel.text = "iPad Touchpad Control Area\n(Drag to move, tap to click, two fingers to scroll, two-finger tap to right click)"
+        touchpadLabel.numberOfLines = 0
         touchpadLabel.textAlignment = .center
         touchpadLabel.textColor = .secondaryLabel
         touchpadLabel.font = .systemFont(ofSize: 14, weight: .medium)
@@ -452,15 +470,12 @@ class MainAppViewController: UIViewController, UITextFieldDelegate, WKNavigation
             sessionPanel.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor),
             sessionPanel.bottomAnchor.constraint(equalTo: trackpadContainer.bottomAnchor),
 
-            addSessionButton.topAnchor.constraint(equalTo: sessionPanel.topAnchor, constant: 16),
-            addSessionButton.leadingAnchor.constraint(equalTo: sessionPanel.leadingAnchor),
-            addSessionButton.trailingAnchor.constraint(equalTo: sessionPanel.trailingAnchor, constant: -16),
+            sessionStack.topAnchor.constraint(equalTo: sessionPanel.topAnchor, constant: 16),
+            sessionStack.leadingAnchor.constraint(equalTo: sessionPanel.leadingAnchor),
+            sessionStack.trailingAnchor.constraint(equalTo: sessionPanel.trailingAnchor, constant: -16),
             addSessionButton.heightAnchor.constraint(equalToConstant: 76),
-
-            resizeMiddleButton.topAnchor.constraint(equalTo: addSessionButton.bottomAnchor, constant: 12),
-            resizeMiddleButton.leadingAnchor.constraint(equalTo: sessionPanel.leadingAnchor),
-            resizeMiddleButton.trailingAnchor.constraint(equalTo: sessionPanel.trailingAnchor, constant: -16),
             resizeMiddleButton.heightAnchor.constraint(equalToConstant: 76),
+            screenshotButton.heightAnchor.constraint(equalToConstant: 76),
 
             urlTextField2.widthAnchor.constraint(equalTo: urlTextField.widthAnchor).withPriority(999),
             trackpadContainer.bottomAnchor.constraint(equalTo: view.keyboardLayoutGuide.topAnchor),
@@ -676,6 +691,12 @@ class MainAppViewController: UIViewController, UITextFieldDelegate, WKNavigation
         tapGesture.allowedTouchTypes = fingersOnly
         trackpadView.addGestureRecognizer(tapGesture)
 
+        // Tap with two fingers: right click
+        let rightTap = UITapGestureRecognizer(target: self, action: #selector(handleTwoFingerTap(_:)))
+        rightTap.numberOfTouchesRequired = 2
+        rightTap.allowedTouchTypes = fingersOnly
+        trackpadView.addGestureRecognizer(rightTap)
+
         // Press and hold, then slide: highlight text (like holding the mouse button down)
         let holdGesture = UILongPressGestureRecognizer(target: self, action: #selector(handleHoldDrag(_:)))
         holdGesture.minimumPressDuration = 0.45
@@ -718,6 +739,10 @@ class MainAppViewController: UIViewController, UITextFieldDelegate, WKNavigation
 
     @objc private func handleTap(_ gesture: UITapGestureRecognizer) {
         DisplayController.shared.performClickAtCursor()
+    }
+
+    @objc private func handleTwoFingerTap(_ gesture: UITapGestureRecognizer) {
+        DisplayController.shared.performClickAtCursor(button: 2)
     }
 
     private func makeClickButton(title: String, action: Selector) -> UIButton {
@@ -1496,6 +1521,34 @@ class MainAppViewController: UIViewController, UITextFieldDelegate, WKNavigation
         let ratio = DisplayController.shared.splitRatio
         let centerX = pad.frame.minX + pad.frame.width * ratio
         handle.frame = CGRect(x: centerX - 30, y: pad.frame.minY, width: 60, height: pad.frame.height)
+    }
+
+    // MARK: - Screenshot of the monitor
+
+    @objc private func screenshotTapped() {
+        guard isAirPlayModeActive, let image = DisplayController.shared.monitorSnapshot() else {
+            showToast("Turn AirPlay on first: the screenshot is of the monitor.")
+            return
+        }
+        UIImageWriteToSavedPhotosAlbum(image, self, #selector(screenshotSaved(_:didFinishSavingWithError:contextInfo:)), nil)
+        lastScreenshot = image
+    }
+
+    private var lastScreenshot: UIImage?
+
+    @objc private func screenshotSaved(_ image: UIImage, didFinishSavingWithError error: Error?, contextInfo: UnsafeRawPointer) {
+        if error == nil {
+            showToast("Screenshot of the monitor saved to Photos")
+            lastScreenshot = nil
+            return
+        }
+        // Photos said no (for example the permission was refused). Offer the share sheet, which can save or send it.
+        showToast("Could not save to Photos. Allow Photos for AirBrowser in Settings, or use the share sheet.")
+        guard let picture = lastScreenshot else { return }
+        let sheet = UIActivityViewController(activityItems: [picture], applicationActivities: nil)
+        sheet.popoverPresentationController?.sourceView = screenshotButton
+        sheet.popoverPresentationController?.sourceRect = screenshotButton.bounds
+        present(sheet, animated: true)
     }
 
     /// Puts the split bar back in the middle: both pages get half of the monitor.
