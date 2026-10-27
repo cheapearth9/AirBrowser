@@ -216,7 +216,148 @@ private let keyBridgeScript = #"""
     return range ? { node: range.startContainer, offset: range.startOffset } : null;
   }
 
+  // ---- Mouse simulation: hovering (so YouTube shows its controls) and a full press / release / click ----
+  var FIELD = 'input:not([type=hidden]):not([type=checkbox]):not([type=radio]):not([type=button]):not([type=submit]):not([type=reset]):not([type=file]):not([type=image]):not([type=range]):not([type=color]), textarea, select, [contenteditable=""], [contenteditable="true"], [contenteditable="plaintext-only"]';
+  var hoverEl = null;
+  var lastHoverX = -1;
+  var lastHoverY = -1;
+
+  function mouseOpts(x, y, extra) {
+    var o = { bubbles: true, cancelable: true, composed: true, view: window,
+              clientX: x, clientY: y, screenX: x, screenY: y, button: 0, buttons: 0, detail: 0 };
+    if (extra) { for (var k in extra) { o[k] = extra[k]; } }
+    return o;
+  }
+
+  function pointerEvent(el, type, x, y, extra) {
+    if (typeof PointerEvent !== 'function') { return; }
+    var o = mouseOpts(x, y, extra);
+    o.pointerId = 1; o.pointerType = 'mouse'; o.isPrimary = true; o.width = 1; o.height = 1;
+    o.pressure = o.buttons ? 0.5 : 0;
+    try { el.dispatchEvent(new PointerEvent(type, o)); } catch (e) {}
+  }
+
+  // Returns false if the page cancelled the event (preventDefault), like a real event would.
+  function mouseEvent(el, type, x, y, extra) {
+    try { return el.dispatchEvent(new MouseEvent(type, mouseOpts(x, y, extra))); } catch (e) { return true; }
+  }
+
+  function visibleBox(n) {
+    var r = n.getBoundingClientRect();
+    if (r.width < 2 || r.height < 2) { return false; }
+    var cs = getComputedStyle(n);
+    return cs.visibility !== 'hidden' && cs.display !== 'none';
+  }
+
+  // What a real press does by default: the text box under the pointer gets the keyboard focus.
+  // A see-through layer can sit on top of the box (Google's search box), so everything stacked at that point is checked.
+  function fieldUnder(el, x, y) {
+    var field = el.closest ? el.closest(FIELD) : null;
+    if (field) { return field; }
+    var stack = document.elementsFromPoint ? document.elementsFromPoint(x, y) : [];
+    for (var i = 0; i < stack.length && i < 6; i++) {
+      var item = stack[i];
+      if (item.matches && item.matches(FIELD) && visibleBox(item)) { return item; }
+    }
+    return null;
+  }
+
+  function skipAd() {
+    // If YouTube ignored the (script-made) click, finish the ad by hand.
+    setTimeout(function () {
+      var player = document.querySelector('.html5-video-player.ad-showing, .html5-video-player.ad-interrupting');
+      if (!player) { return; }
+      var video = player.querySelector('video');
+      if (video && isFinite(video.duration) && video.duration > 0) { video.currentTime = video.duration; }
+    }, 250);
+  }
+
   window.__ab = {
+    // ---- pointer: moving over the page ----
+    hover: function (x, y) {
+      var el = document.elementFromPoint(x, y);
+      if (!el) { return; }
+      if (x === lastHoverX && y === lastHoverY && el === hoverEl) { return; }
+      lastHoverX = x;
+      lastHoverY = y;
+
+      if (el !== hoverEl) {
+        var old = hoverEl;
+        var a;
+        if (old && old.isConnected) {
+          pointerEvent(old, 'pointerout', x, y, { relatedTarget: el });
+          mouseEvent(old, 'mouseout', x, y, { relatedTarget: el });
+          for (a = old; a && a !== document; a = a.parentNode) {
+            if (a.contains && a.contains(el)) { break; }
+            pointerEvent(a, 'pointerleave', x, y, { bubbles: false, relatedTarget: el });
+            mouseEvent(a, 'mouseleave', x, y, { bubbles: false, relatedTarget: el });
+          }
+        }
+        pointerEvent(el, 'pointerover', x, y, { relatedTarget: old });
+        mouseEvent(el, 'mouseover', x, y, { relatedTarget: old });
+        for (a = el; a && a !== document; a = a.parentNode) {
+          if (old && old.isConnected && a.contains && a.contains(old)) { break; }
+          pointerEvent(a, 'pointerenter', x, y, { bubbles: false, relatedTarget: old });
+          mouseEvent(a, 'mouseenter', x, y, { bubbles: false, relatedTarget: old });
+        }
+        hoverEl = el;
+      }
+      pointerEvent(el, 'pointermove', x, y);
+      mouseEvent(el, 'mousemove', x, y);
+    },
+
+    // ---- pointer: a left click (press, release, click), the way a real mouse does it ----
+    click: function (x, y) {
+      var el = document.elementFromPoint(x, y);
+      if (!el) { return; }
+      var inMenu = !!(el.closest && el.closest('#__ab_menu'));
+      if (!inMenu) { try { window.getSelection().removeAllRanges(); } catch (e) {} }
+
+      window.__ab.hover(x, y);
+
+      var down = { button: 0, buttons: 1, detail: 1 };
+      var up = { button: 0, buttons: 0, detail: 1 };
+
+      pointerEvent(el, 'pointerdown', x, y, down);
+      var allowed = mouseEvent(el, 'mousedown', x, y, down);
+
+      var field = null;
+      if (allowed) {
+        field = fieldUnder(el, x, y);
+        if (field) {
+          var fresh = document.activeElement !== field;
+          try { field.focus({ preventScroll: true }); } catch (e) { try { field.focus(); } catch (e2) {} }
+          if (fresh && isTextInput(field)) {
+            try { var n = field.value.length; field.setSelectionRange(n, n); } catch (e3) {}
+          }
+        } else {
+          // Pressing anywhere else takes the keyboard away from a text box, like a real click.
+          var active = document.activeElement;
+          if (active && active !== document.body && active !== document.documentElement && editable(active) && !active.contains(el)) {
+            try { active.blur(); } catch (e4) {}
+          }
+        }
+      }
+
+      pointerEvent(el, 'pointerup', x, y, up);
+      mouseEvent(el, 'mouseup', x, y, up);
+      mouseEvent(el, 'click', x, y, up);
+
+      if (field) {
+        // If the page dropped the focus again, give it back (leave it alone if the page moved it on purpose).
+        setTimeout(function () {
+          var a = document.activeElement;
+          if (field.isConnected && (!a || a === document.body)) {
+            try { field.focus({ preventScroll: true }); } catch (e) {}
+          }
+        }, 80);
+      }
+
+      if (el.closest && el.closest('.ytp-skip-ad-button, .ytp-ad-skip-button, .ytp-ad-skip-button-modern, .ytp-ad-skip-button-slot, .ytp-skip-ad')) {
+        skipAd();
+      }
+    },
+
     // ---- text highlighting with a held press and a slide (like a mouse) ----
     selectStart: function (x, y) {
       closeMenu();
@@ -683,6 +824,32 @@ final class DisplayController: ObservableObject {
         }
     }
 
+    // MARK: - Screenshot of the monitor
+
+    /// A picture of exactly what the monitor shows (one page, or both pages and the black line), without the blue cursor
+    /// and without the iPad's own screen. Returns nil while AirPlay mode is OFF.
+    func monitorSnapshot() -> UIImage? {
+        guard let window = externalWindow, let content = window.rootViewController?.view else { return nil }
+        let size = content.bounds.size
+        guard size.width > 0, size.height > 0 else { return nil }
+
+        // Hide the cursor dot for the picture, then put it back.
+        let cursorAlpha = cursorView.alpha
+        cursorView.alpha = 0
+        defer { cursorView.alpha = cursorAlpha }
+
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = window.windowScene?.screen.nativeScale ?? 1
+        format.opaque = true
+        let renderer = UIGraphicsImageRenderer(size: size, format: format)
+        return renderer.image { context in
+            let area = CGRect(origin: .zero, size: size)
+            if !content.drawHierarchy(in: area, afterScreenUpdates: true) {
+                content.layer.render(in: context.cgContext)
+            }
+        }
+    }
+
     // MARK: - Pages (sessions)
 
     /// Share of the monitor's width given to the first page (0.2 ... 0.8) while two pages are open.
@@ -1141,7 +1308,19 @@ final class DisplayController: ObservableObject {
         cursorView.center = cursorPosition
         cursorActivity()
 
-        if pointerIsDown { pointerDragUpdate() }
+        if pointerIsDown { pointerDragUpdate() } else { sendHover() }
+    }
+
+    private var lastHoverTime = Date.distantPast
+
+    /// Tells the page under the cursor that the mouse moved over it. Pages like YouTube only show their controls
+    /// (title, play / pause, settings...) when they see the mouse move; the cursor dot alone is not seen by the page.
+    private func sendHover() {
+        let now = Date()
+        guard now.timeIntervalSince(lastHoverTime) >= 0.03 else { return }
+        lastHoverTime = now
+        guard let hit = target(at: cursorPosition), !YouTubeTV.isTVAddress(hit.web.url) else { return }
+        hit.web.evaluateJavaScript("window.__ab && window.__ab.hover(\(hit.local.x), \(hit.local.y));")
     }
 
     /// Puts the monitor cursor where the mouse points inside the AirBrowser window, as a fraction (0...1) of the
@@ -1156,7 +1335,7 @@ final class DisplayController: ObservableObject {
         cursorView.center = cursorPosition
         cursorActivity()
 
-        if pointerIsDown { pointerDragUpdate() }
+        if pointerIsDown { pointerDragUpdate() } else { sendHover() }
     }
 
     // MARK: - Keyboard while another app is focused (Split View / Stage Manager)
@@ -1389,25 +1568,7 @@ final class DisplayController: ObservableObject {
             return
         }
 
-        let js = """
-        (function(x, y, button) {
-            var el = document.elementFromPoint(x, y);
-            if (!el) { return; }
-            var inMenu = el.closest ? el.closest('#__ab_menu') : null;
-            if (!inMenu) { try { window.getSelection().removeAllRanges(); } catch (e) {} }
-            var opts = { bubbles: true, cancelable: true, view: window, clientX: x, clientY: y, button: button };
-            el.dispatchEvent(new MouseEvent('mousedown', opts));
-            el.dispatchEvent(new MouseEvent('mouseup', opts));
-            if (button === 2) {
-                el.dispatchEvent(new MouseEvent('contextmenu', opts));
-                return;
-            }
-            var field = el.closest('input, textarea, select, [contenteditable=""], [contenteditable="true"]');
-            if (field) { field.focus(); }
-            el.click();
-        })(\(hit.local.x), \(hit.local.y), \(button));
-        """
-        hit.web.evaluateJavaScript(js)
+        hit.web.evaluateJavaScript("window.__ab && window.__ab.click(\(hit.local.x), \(hit.local.y));")
     }
 
     /// Scrolls the scrollable thing under the cursor (inner scroller first, then the page).
