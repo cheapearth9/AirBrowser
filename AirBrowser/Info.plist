@@ -23,6 +23,8 @@
 
     <key>UIApplicationSupportsIndirectInputEvents</key>
     <true/>
+    <key>NSPhotoLibraryAddUsageDescription</key>
+    <string>Saves screenshots of the monitor to your Photos.</string>
     <key>NSLocationWhenInUseUsageDescription</key>
     <string>Websites you allow can use your approximate location.</string>
     
