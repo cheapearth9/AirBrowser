@@ -37,7 +37,7 @@ private func mouseScrollStep(_ value: Float) -> CGFloat {
 }
 
 // MARK: - JavaScript helper injected into every page (types text / keys into whatever is focused)
-private let keyBridgeScript = #"""
+private let keyBridgeSource = #"""
 (function () {
   if (window.__ab) { return; }
 
@@ -262,6 +262,61 @@ private let keyBridgeScript = #"""
     return null;
   }
 
+  var CAP = '__AB_TOKEN__';
+
+  // The element under a point, looking INSIDE shadow roots too (many site widgets hide their buttons in one).
+  function deepElementFromPoint(x, y) {
+    var el = document.elementFromPoint(x, y);
+    var guard = 0;
+    while (el && el.shadowRoot && guard < 12) {
+      guard += 1;
+      var inner = el.shadowRoot.elementFromPoint ? el.shadowRoot.elementFromPoint(x, y) : null;
+      if (!inner || inner === el) { break; }
+      el = inner;
+    }
+    return el;
+  }
+
+  function isFrame(el) {
+    return !!el && (el.tagName === 'IFRAME' || el.tagName === 'FRAME');
+  }
+
+  // Passes a hover or click on into a frame. A frame of the same website is called directly. Any other frame gets a
+  // message, which only this script's copy inside that frame accepts, and only from its parent and with CAP.
+  function intoFrame(frame, x, y, type, cap) {
+    var w = frame.contentWindow;
+    if (!w) { return 'a frame without a page'; }
+    var r = frame.getBoundingClientRect();
+    var fx = x - r.left - (frame.clientLeft || 0);
+    var fy = y - r.top - (frame.clientTop || 0);
+    try {
+      if (w.document && w.__ab) { return 'a frame > ' + w.__ab[type](fx, fy, cap); }
+    } catch (e) {}
+    if (cap !== CAP) { return 'a frame (not allowed)'; }
+    try {
+      w.postMessage({ abBridge: CAP, type: type, x: fx, y: fy }, '*');
+      return 'a frame from another site (message sent)';
+    } catch (e) {}
+    return 'a frame (could not reach)';
+  }
+
+  function describe(el) {
+    var text = '<' + String(el.tagName).toLowerCase() + '>';
+    if (el.id) { text += '#' + el.id; }
+    var cls = (typeof el.className === 'string') ? el.className.trim().split(/\s+/)[0] : '';
+    if (cls) { text += '.' + cls; }
+    var root = el.getRootNode ? el.getRootNode() : null;
+    if (root && root.host) { text += ' (inside a shadow root)'; }
+    return text;
+  }
+
+  window.addEventListener('message', function (e) {
+    var d = e.data;
+    if (!d || typeof d !== 'object' || d.abBridge !== CAP || e.source !== window.parent) { return; }
+    if (d.type === 'hover') { window.__ab.hover(d.x, d.y, CAP); }
+    else if (d.type === 'click') { window.__ab.click(d.x, d.y, CAP); }
+  }, false);
+
   function skipAd() {
     // If YouTube ignored the (script-made) click, finish the ad by hand.
     setTimeout(function () {
@@ -274,9 +329,10 @@ private let keyBridgeScript = #"""
 
   window.__ab = {
     // ---- pointer: moving over the page ----
-    hover: function (x, y) {
-      var el = document.elementFromPoint(x, y);
-      if (!el) { return; }
+    hover: function (x, y, cap) {
+      var el = deepElementFromPoint(x, y);
+      if (!el) { return ''; }
+      if (isFrame(el)) { return intoFrame(el, x, y, 'hover', cap); }
       if (x === lastHoverX && y === lastHoverY && el === hoverEl) { return; }
       lastHoverX = x;
       lastHoverY = y;
@@ -304,16 +360,18 @@ private let keyBridgeScript = #"""
       }
       pointerEvent(el, 'pointermove', x, y);
       mouseEvent(el, 'mousemove', x, y);
+      return '';
     },
 
     // ---- pointer: a left click (press, release, click), the way a real mouse does it ----
-    click: function (x, y) {
-      var el = document.elementFromPoint(x, y);
-      if (!el) { return; }
+    click: function (x, y, cap) {
+      var el = deepElementFromPoint(x, y);
+      if (!el) { return 'nothing'; }
+      if (isFrame(el)) { return intoFrame(el, x, y, 'click', cap); }
       var inMenu = !!(el.closest && el.closest('#__ab_menu'));
       if (!inMenu) { try { window.getSelection().removeAllRanges(); } catch (e) {} }
 
-      window.__ab.hover(x, y);
+      window.__ab.hover(x, y, cap);
 
       var down = { button: 0, buttons: 1, detail: 1 };
       var up = { button: 0, buttons: 0, detail: 1 };
@@ -356,6 +414,7 @@ private let keyBridgeScript = #"""
       if (el.closest && el.closest('.ytp-skip-ad-button, .ytp-ad-skip-button, .ytp-ad-skip-button-modern, .ytp-ad-skip-button-slot, .ytp-skip-ad')) {
         skipAd();
       }
+      return describe(el);
     },
 
     // ---- text highlighting with a held press and a slide (like a mouse) ----
@@ -514,6 +573,11 @@ private let keyBridgeScript = #"""
   };
 })();
 """#
+
+/// A secret known only to this app's page scripts. A frame accepts a click or hover from its parent page only with it,
+/// so a website cannot make this browser click inside another website's frame. Pages cannot read it.
+private let bridgeToken = UUID().uuidString
+private let keyBridgeScript = keyBridgeSource.replacingOccurrences(of: "__AB_TOKEN__", with: bridgeToken)
 
 // MARK: - Full screen on the monitor
 /// A page's own full-screen button (YouTube's) normally asks WebKit for a separate full-screen window. That window can
@@ -714,7 +778,7 @@ final class DisplayController: ObservableObject {
 
         // Lets the keyboard (iPad or hardware) type into the page that is shown on the monitor.
         config.userContentController.addUserScript(
-            WKUserScript(source: keyBridgeScript, injectionTime: .atDocumentStart, forMainFrameOnly: true)
+            WKUserScript(source: keyBridgeScript, injectionTime: .atDocumentStart, forMainFrameOnly: false)
         )
 
         // Full screen that works on the monitor (see fullscreenScript).
@@ -1320,7 +1384,7 @@ final class DisplayController: ObservableObject {
         guard now.timeIntervalSince(lastHoverTime) >= 0.03 else { return }
         lastHoverTime = now
         guard let hit = target(at: cursorPosition), !YouTubeTV.isTVAddress(hit.web.url) else { return }
-        hit.web.evaluateJavaScript("window.__ab && window.__ab.hover(\(hit.local.x), \(hit.local.y));")
+        hit.web.evaluateJavaScript("window.__ab && window.__ab.hover(\(hit.local.x), \(hit.local.y), \"\(bridgeToken)\");")
     }
 
     /// Puts the monitor cursor where the mouse points inside the AirBrowser window, as a fraction (0...1) of the
@@ -1568,8 +1632,14 @@ final class DisplayController: ObservableObject {
             return
         }
 
-        hit.web.evaluateJavaScript("window.__ab && window.__ab.click(\(hit.local.x), \(hit.local.y));")
+        hit.web.evaluateJavaScript("window.__ab && window.__ab.click(\(hit.local.x), \(hit.local.y), \"\(bridgeToken)\");") { [weak self] result, _ in
+            guard let self = self, self.clickDiagnostics, let what = result as? String else { return }
+            NotificationCenter.default.post(name: DownloadManager.message, object: nil, userInfo: ["text": "Click hit: " + what])
+        }
     }
+
+    /// When on, every click shows what it landed on (for finding out why a site ignores clicks). Switched in Settings.
+    var clickDiagnostics = false
 
     /// Scrolls the scrollable thing under the cursor (inner scroller first, then the page).
     /// Positive deltaY scrolls the page down.
