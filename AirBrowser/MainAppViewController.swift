@@ -887,6 +887,14 @@ class MainAppViewController: UIViewController, UITextFieldDelegate, WKNavigation
         ) { [weak self] _ in
             self?.toggleIncognito()
         })
+        alert.addAction(UIAlertAction(
+            title: "Click diagnostics: " + (DisplayController.shared.clickDiagnostics ? "On" : "Off") + " (tap to switch)",
+            style: .default
+        ) { [weak self] _ in
+            DisplayController.shared.clickDiagnostics.toggle()
+            self?.showToast(DisplayController.shared.clickDiagnostics ? "Each click will show what it hit" : "Click diagnostics off")
+            DispatchQueue.main.async { self?.focusCaptureIfNeeded() }
+        })
         if YouTubeTV.isTVAddress(webView.url) {
             alert.addAction(UIAlertAction(title: "YouTube TV options...", style: .default) { [weak self] _ in
                 self?.showTVOptions()
