@@ -5,6 +5,9 @@ on:
     branches: [ "main" ]
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   build-ipa:
     runs-on: macos-15
@@ -42,3 +45,11 @@ jobs:
         with:
           name: AirBrowser-Unsigned-IPA
           path: AirBrowser.ipa
+
+      - name: Publish the IPA as a release (for the AltStore source)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view ios-latest >/dev/null 2>&1 || gh release create ios-latest --title "AirBrowser (latest)" --notes "Build ${{ github.run_number }}"
+          gh release edit ios-latest --notes "Build ${{ github.run_number }}"
+          gh release upload ios-latest AirBrowser.ipa --clobber
