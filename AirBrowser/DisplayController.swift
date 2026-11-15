@@ -230,12 +230,21 @@ private let keyBridgeSource = #"""
   }
 
   function pointerEvent(el, type, x, y, extra) {
-    if (typeof PointerEvent !== 'function') { return; }
+    if (typeof PointerEvent !== 'function') { return true; }
     var o = mouseOpts(x, y, extra);
     o.pointerId = 1; o.pointerType = 'mouse'; o.isPrimary = true; o.width = 1; o.height = 1;
     o.pressure = o.buttons ? 0.5 : 0;
-    try { el.dispatchEvent(new PointerEvent(type, o)); } catch (e) {}
+    try { return el.dispatchEvent(new PointerEvent(type, o)); } catch (e) { return true; }
   }
+
+  // Pages that "capture" the pointer while dragging (chess boards, sliders) would throw on the pointer made here,
+  // which is not a real device. Make that call harmless.
+  try {
+    var nativeSetCapture = Element.prototype.setPointerCapture;
+    var nativeReleaseCapture = Element.prototype.releasePointerCapture;
+    Element.prototype.setPointerCapture = function (id) { try { return nativeSetCapture.call(this, id); } catch (e) {} };
+    Element.prototype.releasePointerCapture = function (id) { try { return nativeReleaseCapture.call(this, id); } catch (e) {} };
+  } catch (e) {}
 
   // Returns false if the page cancelled the event (preventDefault), like a real event would.
   function mouseEvent(el, type, x, y, extra) {
@@ -316,6 +325,35 @@ private let keyBridgeSource = #"""
     if (d.type === 'hover') { window.__ab.hover(d.x, d.y, CAP); }
     else if (d.type === 'click') { window.__ab.click(d.x, d.y, CAP); }
   }, false);
+
+  // True if the point is on actual text (so a press-and-slide there should highlight it).
+  function overText(el, x, y) {
+    try {
+      var cs = getComputedStyle(el);
+      if (cs.userSelect === 'none' || cs.webkitUserSelect === 'none') { return false; }
+      var range = document.caretRangeFromPoint ? document.caretRangeFromPoint(x, y) : null;
+      if (!range) { return false; }
+      var node = range.startContainer;
+      if (!node || node.nodeType !== 3 || !node.nodeValue || !node.nodeValue.trim()) { return false; }
+      var r = document.createRange();
+      r.selectNodeContents(node);
+      var rects = r.getClientRects();
+      for (var i = 0; i < rects.length; i++) {
+        var b = rects[i];
+        if (x >= b.left - 2 && x <= b.right + 2 && y >= b.top - 2 && y <= b.bottom + 2) { return true; }
+      }
+    } catch (e) {}
+    return false;
+  }
+
+  function commonAncestor(a, b) {
+    for (var n = a; n; n = n.parentNode) {
+      if (n.contains && n.contains(b)) { return n; }
+    }
+    return document;
+  }
+
+  var drag = null;
 
   function skipAd() {
     // If YouTube ignored the (script-made) click, finish the ad by hand.
@@ -413,6 +451,68 @@ private let keyBridgeSource = #"""
 
       if (el.closest && el.closest('.ytp-skip-ad-button, .ytp-ad-skip-button, .ytp-ad-skip-button-modern, .ytp-ad-skip-button-slot, .ytp-skip-ad')) {
         skipAd();
+      }
+      return describe(el);
+    },
+
+    // ---- a held press and a slide, like a real mouse ----
+    // Over text it highlights the text. Anywhere else (a chess piece, a slider, an image) the page gets a real
+    // press, moves and release, so it can pick things up and drop them.
+    dragBegin: function (x, y, cap) {
+      var el = deepElementFromPoint(x, y);
+      drag = null;
+      if (!el) { return 'none'; }
+      if (isFrame(el)) { return intoFrame(el, x, y, 'hover', cap); }
+      window.__ab.hover(x, y, cap);
+
+      var down = { button: 0, buttons: 1, detail: 1 };
+      var pointerAllowed = pointerEvent(el, 'pointerdown', x, y, down);
+      // A real browser sends no mouse events when the page cancelled the pointer press.
+      var noMouse = !pointerAllowed;
+      var allowed = noMouse ? false : mouseEvent(el, 'mousedown', x, y, down);
+
+      var mode = (allowed && overText(el, x, y)) ? 'text' : 'page';
+      if (allowed) {
+        var field = fieldUnder(el, x, y);
+        if (field) {
+          try { field.focus({ preventScroll: true }); } catch (e) {}
+          mode = 'page';
+        }
+      }
+      drag = { el: el, x: x, y: y, lastX: x, lastY: y, mode: mode, noMouse: noMouse };
+      if (mode === 'text') { window.__ab.selectStart(x, y); }
+      return mode;
+    },
+
+    dragMove: function (x, y) {
+      if (!drag) { return; }
+      drag.lastX = x;
+      drag.lastY = y;
+      if (drag.mode === 'text') { window.__ab.selectMove(x, y); return; }
+      var el = deepElementFromPoint(x, y) || drag.el;
+      var move = { button: 0, buttons: 1 };
+      pointerEvent(el, 'pointermove', x, y, move);
+      if (!drag.noMouse) { mouseEvent(el, 'mousemove', x, y, move); }
+    },
+
+    dragEnd: function (x, y) {
+      var st = drag;
+      drag = null;
+      if (!st) { return ''; }
+      if (st.mode === 'page' && (x !== st.lastX || y !== st.lastY)) {
+        // The last move may have been skipped to save work: tell the page where the pointer really ended.
+        drag = st;
+        window.__ab.dragMove(x, y);
+        drag = null;
+      }
+      var el = deepElementFromPoint(x, y) || st.el;
+      var up = { button: 0, buttons: 0, detail: 1 };
+      if (st.mode === 'text') { window.__ab.selectEnd(x, y); }
+      pointerEvent(el, 'pointerup', x, y, up);
+      if (!st.noMouse) { mouseEvent(el, 'mouseup', x, y, up); }
+      if (st.mode === 'page') {
+        // Like a real browser: a click is sent to the closest element that contains both the press and the release.
+        mouseEvent(commonAncestor(st.el, el), 'click', x, y, up);
       }
       return describe(el);
     },
@@ -1584,10 +1684,10 @@ final class DisplayController: ObservableObject {
             if moved < 6 { return } // a little wobble is still a click
             pointerDragged = true
             let start = local(pointerDownPosition, in: web)
-            web.evaluateJavaScript("window.__ab && window.__ab.selectStart(\(start.x), \(start.y));")
+            web.evaluateJavaScript("window.__ab && window.__ab.dragBegin(\(start.x), \(start.y), \"\(bridgeToken)\");")
         }
         let now = local(cursorPosition, in: web)
-        web.evaluateJavaScript("window.__ab && window.__ab.selectMove(\(now.x), \(now.y));")
+        web.evaluateJavaScript("window.__ab && window.__ab.dragMove(\(now.x), \(now.y));")
     }
 
     /// The button came up: finish the highlight, or, if nothing was dragged, click.
@@ -1598,7 +1698,7 @@ final class DisplayController: ObservableObject {
             pointerDragged = false
             if let web = pressedWeb {
                 let end = local(cursorPosition, in: web)
-                web.evaluateJavaScript("window.__ab && window.__ab.selectEnd(\(end.x), \(end.y));")
+                web.evaluateJavaScript("window.__ab && window.__ab.dragEnd(\(end.x), \(end.y));")
             }
         } else {
             performClickAtCursor()

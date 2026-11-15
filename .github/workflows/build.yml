@@ -45,6 +45,17 @@ jobs:
         with:
           name: AirBrowser-Unsigned-IPA
           path: AirBrowser.ipa
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION=$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" AirBrowser/Info.plist)
+          TAG="v${VERSION}-build${{ github.run_number }}"
+          gh release create "$TAG" AirBrowser.ipa \
+            --title "AirBrowser $VERSION (build ${{ github.run_number }})" \
+            --notes "Automatic build of commit ${{ github.sha }}. Unsigned IPA: sideload it with AltStore, SideStore, LiveContainer, etc." \
+            --target "${{ github.sha }}"
+
 
       - name: Publish the IPA as a release (for the AltStore source)
         env:
